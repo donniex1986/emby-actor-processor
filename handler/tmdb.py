@@ -246,20 +246,95 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
         logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
     
     return _tmdb_request(endpoint, api_key, params)
-# --- 获取电视剧某一季的详细信息，简化调用版 ---
-def get_tv_season_details(tv_id: int, season_number: int, api_key: str) -> Optional[Dict[str, Any]]:
+
+# --- 获取电视剧某一季的详细信息，增强版 ---
+def get_tv_season_details(tv_id: int, season_number: int, api_key: str, language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    获取电视剧某一季的详细信息。
-    这是 get_season_details_tmdb 的一个更简洁的别名，用于简化调用并获取海报。
+    【已升级】获取特定季的详细信息（含分集）。
+    逻辑升级：如果中文数据缺失（标题为空、为默认格式或简介缺失），自动请求英文数据进行补全。
+    这样 AI 翻译模块就能拿到英文原文进行翻译，而不是面对空白或“第X集”。
     """
-    # 直接调用已有的、功能更全的函数。
-    # 我们不需要 'credits' 等附加信息，所以 append_to_response 传 None，这样请求更轻量。
-    return get_season_details_tmdb(
-        tv_id=tv_id,
-        season_number=season_number,
-        api_key=api_key,
-        append_to_response=None
-    )
+    endpoint = f"/tv/{tv_id}/season/{season_number}"
+    target_lang = language or DEFAULT_LANGUAGE
+    
+    params = {
+        "language": target_lang,
+        "append_to_response": "credits,images,videos,translations"
+    }
+    
+    # 1. 获取目标语言（通常是中文）的数据
+    data = _tmdb_request(endpoint, api_key, params)
+    
+    if not data:
+        return None
+
+    # 如果请求的就是英文，或者数据里没有分集信息，直接返回
+    if target_lang == "en-US" or "episodes" not in data:
+        return data
+
+    # 2. 检查是否需要补全英文源数据
+    # 条件：有任意一集 标题为空 OR 标题看起来像"Episode X" OR 简介为空
+    needs_english_fallback = False
+    episodes = data.get("episodes", [])
+    
+    for ep in episodes:
+        name = ep.get("name", "")
+        overview = ep.get("overview", "")
+        
+        # 判断标题是否无效 (空，或者只是 "Episode 1", "第 1 集" 这种占位符)
+        is_name_invalid = (
+            not name 
+            or name.lower().startswith("episode") 
+            or (name.startswith("第") and name.endswith("集"))
+            or name.isdigit()
+        )
+        
+        # 判断简介是否无效
+        is_overview_invalid = not overview
+        
+        if is_name_invalid or is_overview_invalid:
+            needs_english_fallback = True
+            break
+    
+    # 3. 如果需要，请求英文数据并合并
+    if needs_english_fallback:
+        logger.info(f"  ➜ 检测到第 {season_number} 季部分分集缺少中文标题/简介，正在请求英文版补全...")
+        en_params = {
+            "language": "en-US",
+            # 英文版不需要请求 credits/images 等额外数据，只要基础信息即可，节省流量
+        }
+        en_data = _tmdb_request(endpoint, api_key, en_params)
+        
+        if en_data and "episodes" in en_data:
+            en_episodes_map = {e["episode_number"]: e for e in en_data["episodes"]}
+            
+            count_fixed = 0
+            for ep in episodes:
+                ep_num = ep.get("episode_number")
+                en_ep = en_episodes_map.get(ep_num)
+                
+                if not en_ep: continue
+                
+                # A. 补全/替换标题
+                current_name = ep.get("name", "")
+                # 如果当前标题无效，或者就是默认的“第x集”，则用英文标题覆盖
+                # 这样 AI 翻译器就能看到 "The Weekend in Paris Job" 并翻译它了
+                if not current_name or current_name.startswith("第") or current_name.lower().startswith("episode"):
+                    if en_ep.get("name"):
+                        ep["name"] = en_ep.get("name")
+                        count_fixed += 1
+                
+                # B. 补全简介
+                # 如果中文简介为空，用英文简介填坑
+                if not ep.get("overview"):
+                    if en_ep.get("overview"):
+                        ep["overview"] = en_ep.get("overview")
+            
+            if count_fixed > 0:
+                logger.info(f"    ➜ 已使用英文源数据修复了 {count_fixed} 个分集的标题/简介。")
+
+    return data
+
 # --- 接收一个剧集 TMDB ID 列表，并发地获取所有这些剧集的完整子项（季、集）信息 ---
 def batch_get_full_series_details_tmdb(
     series_tmdb_ids: List[str], 
@@ -375,49 +450,8 @@ def aggregate_full_series_data_from_tmdb(
     # --- 步骤 2: 定义智能获取函数 ---
     def _fetch_season_smart(tvid, s_num):
         """内部函数：获取季数据，如果简介缺失则自动获取英文版补全"""
-        # 1. 获取默认语言 (通常是中文)
-        data_zh = get_season_details_tmdb(tvid, s_num, api_key)
-        if not data_zh: 
-            return None
-        
-        # 2. 检查是否有空简介
-        # 只有当默认语言是中文时才检查，如果是英文就没必要再请求一遍英文了
-        if DEFAULT_LANGUAGE.startswith("zh"):
-            episodes = data_zh.get("episodes", [])
-            missing_overview_indices = []
-            
-            for i, ep in enumerate(episodes):
-                # 如果简介为空，或者简介太短（比如"暂无"），记录下来
-                if not ep.get("overview") or len(ep.get("overview")) < 2:
-                    missing_overview_indices.append(i)
-            
-            # 3. 如果有缺失，请求英文版补全
-            if missing_overview_indices:
-                logger.debug(f"    ➜ 第 {s_num} 季有 {len(missing_overview_indices)} 集缺失中文简介，正在请求英文版补全...")
-                try:
-                    data_en = get_season_details_tmdb(tvid, s_num, api_key, language="en-US")
-                    if data_en:
-                        episodes_en = data_en.get("episodes", [])
-                        # 建立集号到英文数据的映射，防止顺序不一致
-                        en_ep_map = {e.get("episode_number"): e for e in episodes_en}
-                        
-                        filled_count = 0
-                        for idx in missing_overview_indices:
-                            target_ep = episodes[idx]
-                            ep_num = target_ep.get("episode_number")
-                            
-                            if ep_num in en_ep_map:
-                                en_overview = en_ep_map[ep_num].get("overview")
-                                if en_overview:
-                                    target_ep["overview"] = en_overview
-                                    filled_count += 1
-                        
-                        if filled_count > 0:
-                            logger.debug(f"    ➜ 第 {s_num} 季成功补全了 {filled_count} 条英文简介。")
-                except Exception as e:
-                    logger.warning(f"    ➜ 补全英文简介失败: {e}")
-
-        return data_zh
+        # 直接调用增强版的 get_tv_season_details，它内部包含了标题和简介的英文补全逻辑
+        return get_tv_season_details(tvid, s_num, api_key)
 
     # --- 步骤 3: 构建任务 ---
     tasks = []
