@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "10.8.32",
+  "version": "10.8.33",
   "type": "module",
   "scripts": {
     "dev": "vite --force",

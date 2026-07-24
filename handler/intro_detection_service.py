@@ -36,7 +36,7 @@ INTRO_SAMPLE_STEPS = (180, 300, SAMPLE_SECONDS)
 CREDITS_SAMPLE_STEPS = (180, 300)
 INTRO_DETECTION_ALGORITHM_VERSION = 2
 MAX_WORK_EPISODES_PER_SEASON = 3
-MAX_WRITE_EPISODES_PER_JOB = 8
+MAX_WRITE_EPISODES_PER_JOB = MAX_WORK_EPISODES_PER_SEASON
 BATCH_CONTINUATION_DELAY_SECONDS = 3
 MIN_INTRO_SECONDS = 18
 MAX_INTRO_SECONDS = 240
@@ -1854,12 +1854,12 @@ def _detect_and_write_credits(
         if ref.sha1 and not _needs_kind_detection(ref, FINGERPRINT_KIND_CREDITS):
             _, credits_start = _cached_chapter_ticks(ref.sha1)
             if credits_start is not None:
-                runtime_sec = _cached_runtime_seconds(ref.sha1)
-                if runtime_sec > 0:
-                    tail_durations.append((runtime_sec * INTRO_TICKS) - credits_start)
+                tail_duration = _credits_tail_duration_ticks(ref.sha1, credits_start)
+                if tail_duration is not None:
+                    tail_durations.append(tail_duration)
 
     if len(tail_durations) >= 2:
-        global_avg_tail_ticks = sum(tail_durations) / len(tail_durations)
+        global_tail_ticks = float(median(tail_durations))
         logger.info(
             "  ➜ [片头片尾提取] 《%s》第 %s 季已有 %s 集提取过片尾，触发全局反推，跳过模板下载。",
             target.series_title,
@@ -1872,24 +1872,20 @@ def _detect_and_write_credits(
         for ref in pending_refs:
             attempted += 1
             if _cache_has_intro(ref.sha1):
-                runtime_sec = _cached_runtime_seconds(ref.sha1)
-                if runtime_sec > 0:
-                    own_start = int((runtime_sec * INTRO_TICKS) - global_avg_tail_ticks)
-                    if _write_credits_for_episode(ref, own_start):
-                        updated += 1
-                        logger.info(
-                            "  ➜ [片头片尾提取] 《%s》S%02dE%02d 已成功提取片头，触发全局反推模式，按平均片尾时长反推起点。",
-                            ref.series_title,
-                            ref.season_number,
-                            ref.episode_number,
-                        )
+                own_start = _infer_credits_start_from_tail(ref, global_tail_ticks)
+                if own_start is not None and _write_credits_for_episode(ref, own_start):
+                    updated += 1
+                    logger.info(
+                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 已成功提取片头，触发全局反推模式，按本季片尾时长反推起点。",
+                        ref.series_title,
+                        ref.season_number,
+                        ref.episode_number,
+                    )
             else:
-                # 【核心修复】：不打失败标记！只打印日志，保留 pending 状态，等片头成功后再反推
-                logger.info(
-                    "  ➜ [片头片尾提取] 《%s》S%02dE%02d 暂无片头，跳过本次片尾反推，等待片头提取成功后重试。",
-                    ref.series_title,
-                    ref.season_number,
-                    ref.episode_number,
+                _handle_credits_waiting_for_intro(
+                    ref,
+                    sample_count=0,
+                    episode_count=len(season_refs),
                 )
             time.sleep(0)
             
@@ -1987,13 +1983,11 @@ def _detect_and_write_credits(
 
     tail_durations_batch = []
     for sha1, start_ticks in starts_by_sha1.items():
-        runtime_sec = _cached_runtime_seconds(sha1)
-        if runtime_sec > 0:
-            tail_durations_batch.append((runtime_sec * INTRO_TICKS) - start_ticks)
+        tail_duration = _credits_tail_duration_ticks(sha1, start_ticks)
+        if tail_duration is not None:
+            tail_durations_batch.append(tail_duration)
 
-    avg_tail_duration_ticks = 0
-    if tail_durations_batch:
-        avg_tail_duration_ticks = sum(tail_durations_batch) / len(tail_durations_batch)
+    inferred_tail_ticks = float(median(tail_durations_batch)) if len(tail_durations_batch) >= 2 else 0
 
     updated = 0
     attempted = 0
@@ -2003,25 +1997,22 @@ def _detect_and_write_credits(
         had_fingerprint = own_start is not None
 
         if own_start is None:
-            if avg_tail_duration_ticks > 0:
+            if inferred_tail_ticks > 0:
                 if _cache_has_intro(ref.sha1):
-                    runtime_sec = _cached_runtime_seconds(ref.sha1)
-                    if runtime_sec > 0:
-                        own_start = int((runtime_sec * INTRO_TICKS) - avg_tail_duration_ticks)
+                    own_start = _infer_credits_start_from_tail(ref, inferred_tail_ticks)
+                    if own_start is not None:
                         had_fingerprint = True
                         logger.info(
-                            "  ➜ [片头片尾提取] 《%s》S%02dE%02d 已成功提取片头，触发反推模式，按平均片尾时长反推起点。",
+                            "  ➜ [片头片尾提取] 《%s》S%02dE%02d 已成功提取片头，触发反推模式，按本季片尾时长反推起点。",
                             ref.series_title,
                             ref.season_number,
                             ref.episode_number,
                         )
                 else:
-                    # 【核心修复】：第一批次中，如果没有片头，同样不打失败标记，直接跳过本集，也不去下载音频
-                    logger.info(
-                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 暂无片头，跳过本次片尾反推，等待片头提取成功后重试。",
-                        ref.series_title,
-                        ref.season_number,
-                        ref.episode_number,
+                    _handle_credits_waiting_for_intro(
+                        ref,
+                        sample_count=len(fps),
+                        episode_count=len(season_refs),
                     )
                     continue
 
@@ -2248,11 +2239,68 @@ def _match_intro_with_progressive_windows(
 def _normalize_credits_start_by_sha1(sha1: str, start_seconds: float) -> Optional[int]:
     start_seconds = float(start_seconds)
     runtime_seconds = _cached_runtime_seconds(sha1)
-    if runtime_seconds > 0 and (start_seconds <= 0 or start_seconds >= runtime_seconds - MIN_CREDITS_SECONDS):
-        return None
+    if runtime_seconds > 0:
+        tail_seconds = runtime_seconds - start_seconds
+        if (
+            start_seconds <= 0
+            or tail_seconds < MIN_CREDITS_SECONDS
+            or tail_seconds > MAX_CREDITS_SECONDS + CREDITS_BOUNDARY_MARGIN_SECONDS
+        ):
+            return None
     if start_seconds <= 0:
         return None
     return int(round(start_seconds * INTRO_TICKS))
+
+
+def _credits_tail_duration_ticks(sha1: str, start_ticks: int) -> Optional[float]:
+    runtime_seconds = _cached_runtime_seconds(sha1)
+    if runtime_seconds <= 0:
+        return None
+    tail_ticks = (runtime_seconds * INTRO_TICKS) - int(start_ticks)
+    min_tail = MIN_CREDITS_SECONDS * INTRO_TICKS
+    max_tail = (MAX_CREDITS_SECONDS + CREDITS_BOUNDARY_MARGIN_SECONDS) * INTRO_TICKS
+    if min_tail <= tail_ticks <= max_tail:
+        return float(tail_ticks)
+    return None
+
+
+def _infer_credits_start_from_tail(ref: EpisodeRef, tail_ticks: float) -> Optional[int]:
+    runtime_seconds = _cached_runtime_seconds(ref.sha1)
+    if runtime_seconds <= 0:
+        return None
+    start_seconds = runtime_seconds - (float(tail_ticks) / INTRO_TICKS)
+    return _normalize_credits_start_by_sha1(ref.sha1, start_seconds)
+
+
+def _handle_credits_waiting_for_intro(
+    ref: EpisodeRef,
+    *,
+    sample_count: int,
+    episode_count: int,
+) -> None:
+    if _needs_kind_detection(ref, FINGERPRINT_KIND_INTRO):
+        logger.info(
+            "  ➜ [片头片尾提取] 《%s》S%02dE%02d 暂无片头，跳过本次片尾反推，等待片头提取成功后重试。",
+            ref.series_title,
+            ref.season_number,
+            ref.episode_number,
+        )
+        return
+
+    _mark_detection_failure(
+        ref,
+        FINGERPRINT_KIND_CREDITS,
+        scope='episode',
+        reason='credits_inference_no_intro',
+        sample_count=sample_count,
+        episode_count=episode_count,
+    )
+    logger.info(
+        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 片头已终止或不可用，片尾反推同步终止。",
+        ref.series_title,
+        ref.season_number,
+        ref.episode_number,
+    )
 
 
 def _match_credits_against_template(
@@ -2549,6 +2597,16 @@ def _write_intro_for_episode(ref: EpisodeRef, start_ticks: int, end_ticks: int) 
 
 
 def _write_credits_for_episode(ref: EpisodeRef, start_ticks: int) -> bool:
+    normalized_ticks = _normalize_credits_start_by_sha1(ref.sha1, int(start_ticks) / INTRO_TICKS)
+    if normalized_ticks is None:
+        logger.info(
+            "  ➜ [片头片尾提取] 《%s》S%02dE%02d 片尾起点不安全，跳过写入。",
+            ref.series_title,
+            ref.season_number,
+            ref.episode_number,
+        )
+        return False
+    start_ticks = normalized_ticks
     chapter = {
         "StartPositionTicks": int(start_ticks),
         "Name": "片尾",
@@ -2623,6 +2681,8 @@ def _cached_chapter_ticks(sha1: str) -> Tuple[Optional[Tuple[int, int]], Optiona
         if intro_start is not None and intro_end is not None and intro_end > intro_start >= 0
         else None
     )
+    if credits_start is not None and _normalize_credits_start_by_sha1(sha1, credits_start / INTRO_TICKS) is None:
+        credits_start = None
     return intro_range, credits_start
 
 
@@ -2770,13 +2830,8 @@ def _cache_has_intro(sha1: str) -> bool:
 
 
 def _cache_has_credits(sha1: str) -> bool:
-    data = _cached_mediainfo(sha1)
-    root = _mediainfo_root(data)
-    chapters = root.get("Chapters") if isinstance(root, dict) else []
-    return any(
-        isinstance(item, dict) and str(item.get("MarkerType") or "") == "CreditsStart"
-        for item in (chapters if isinstance(chapters, list) else [])
-    )
+    _, credits_start = _cached_chapter_ticks(sha1)
+    return credits_start is not None
 
 
 def _cached_runtime_seconds(sha1: str) -> float:
