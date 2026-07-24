@@ -572,7 +572,7 @@ def init_db():
                     )
                 """)
 
-                logger.trace("  ➜ 正在创建 'p115_intro_fingerprint_cache' 表 (ETK 自主片头指纹缓存)...")
+                logger.trace("  ➜ 正在创建 'p115_intro_fingerprint_cache' 表 (ETK 片头指纹缓存)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS p115_intro_fingerprint_cache (
                         sha1 TEXT PRIMARY KEY,
@@ -583,6 +583,7 @@ def init_db():
                     )
                 """)
 
+                logger.trace("  ➜ 正在创建 'p115_intro_detection_failures' 表 (片头识别失败记录)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS p115_intro_detection_failures (
                         failure_key TEXT NOT NULL,

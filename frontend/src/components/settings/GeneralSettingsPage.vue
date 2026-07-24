@@ -2257,6 +2257,7 @@ const tableInfo = {
   'media_image_cache': { cn: '媒体图片缓存', isSharable: false },
   'media_image_policy_cache': { cn: '媒体图片策略缓存', isSharable: false },
   'p115_intro_fingerprint_cache': { cn: '片头声纹缓存', isSharable: false },
+  'p115_intro_detection_failures': { cn: '片头识别失败记录', isSharable: false },
   'resubscribe_rules': { cn: '媒体洗版规则', isSharable: false },
   'resubscribe_index': { cn: '媒体洗版缓存', isSharable: false },
   'cleanup_index': { cn: '媒体去重缓存', isSharable: false },
