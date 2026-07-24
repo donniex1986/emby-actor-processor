@@ -1949,22 +1949,23 @@ def _detect_and_write_credits(
         had_fingerprint = own_start is not None
 
         if own_start is None:
-            # ================== 【新增：尝试反推片尾】 ==================
-            if avg_tail_duration_ticks > 0:
+            # ================== 【修改：尝试反推片尾】 ==================
+            # 增加条件：_cache_has_intro(ref.sha1) 确保该集已经成功提取了片头，才允许反推片尾
+            if avg_tail_duration_ticks > 0 and _cache_has_intro(ref.sha1):
                 runtime_sec = _cached_runtime_seconds(ref.sha1)
                 if runtime_sec > 0:
                     # 直接用：总时长 - 平均片尾时长 = 当前集片尾起点
                     own_start = int((runtime_sec * INTRO_TICKS) - avg_tail_duration_ticks)
                     had_fingerprint = True
                     logger.info(
-                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 触发偷懒模式，按平均片尾时长反推起点。",
+                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 已成功提取片头，按平均片尾时长反推起点。",
                         ref.series_title,
                         ref.season_number,
                         ref.episode_number,
                     )
             # ============================================================
 
-            # 如果偷懒模式失败（例如获取不到该集的总时长），则回退到原始的下载识别模式
+            # 如果偷懒模式未触发（例如没有片头），或者获取不到总时长，则回退到原始的下载识别模式
             if own_start is None:
                 try:
                     own_start, had_fingerprint = _match_credits_with_progressive_windows(
