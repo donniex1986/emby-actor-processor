@@ -1848,6 +1848,73 @@ def _detect_and_write_credits(
     if not pending_refs:
         return
 
+    # ================== 【新增：跨批次全局偷懒模式】 ==================
+    # 尝试从本季已经成功提取片尾的集中，计算平均片尾时长
+    tail_durations = []
+    for ref in season_refs:
+        if ref.sha1 and not _needs_kind_detection(ref, FINGERPRINT_KIND_CREDITS):
+            # 说明这集已经有片尾了
+            _, credits_start = _cached_chapter_ticks(ref.sha1)
+            if credits_start is not None:
+                runtime_sec = _cached_runtime_seconds(ref.sha1)
+                if runtime_sec > 0:
+                    tail_durations.append((runtime_sec * INTRO_TICKS) - credits_start)
+
+    # 如果本季已经有至少 2 集成功提取了片尾，直接触发全局偷懒，跳过所有下载！
+    if len(tail_durations) >= 2:
+        global_avg_tail_ticks = sum(tail_durations) / len(tail_durations)
+        logger.info(
+            "  ➜ [片头片尾提取] 《%s》第 %s 季已有 %s 集提取过片尾，触发全局反推，跳过模板下载。",
+            target.series_title,
+            target.season_number,
+            len(tail_durations)
+        )
+        
+        updated = 0
+        attempted = 0
+        for ref in pending_refs:
+            attempted += 1
+            if _cache_has_intro(ref.sha1):
+                runtime_sec = _cached_runtime_seconds(ref.sha1)
+                if runtime_sec > 0:
+                    own_start = int((runtime_sec * INTRO_TICKS) - global_avg_tail_ticks)
+                    if _write_credits_for_episode(ref, own_start):
+                        updated += 1
+                        logger.info(
+                            "  ➜ [片头片尾提取] 《%s》S%02dE%02d 已成功提取片头，触发全局反推模式，按平均片尾时长反推起点。",
+                            ref.series_title,
+                            ref.season_number,
+                            ref.episode_number,
+                        )
+            else:
+                # 没有片头，拒绝偷懒，并直接标记片尾失败，防止下一批次无限重试
+                _mark_detection_failure(
+                    ref,
+                    FINGERPRINT_KIND_CREDITS,
+                    scope='episode',
+                    reason='skipped_due_to_no_intro',
+                    sample_count=0,
+                    episode_count=len(season_refs),
+                )
+                logger.info(
+                    "  ➜ [片头片尾提取] 《%s》S%02dE%02d 未提取到片头，拒绝反推，已标记跳过片尾。",
+                    ref.series_title,
+                    ref.season_number,
+                    ref.episode_number,
+                )
+            time.sleep(0)
+            
+        logger.info(
+            "  ➜ [片头片尾提取] 《%s》第 %s 季全局反推模式完成，本轮逐集回写 %s/%s 集。",
+            target.series_title,
+            target.season_number,
+            updated,
+            attempted,
+        )
+        return
+    # ==================================================================
+
+    # --- 以下为第一批次（尚无历史数据）的常规处理逻辑 ---
     sample_refs = _select_template_refs(
         target,
         season_refs,
@@ -1925,21 +1992,20 @@ def _detect_and_write_credits(
         )
         logger.info("  ➜ [片头片尾提取] 《%s》第 %s 季未找到稳定公共片尾，当前算法版本不再重试。", target.series_title, target.season_number)
         return
+        
     base_fp, base_start, base_end, starts_by_sha1, matched = detected
     target_start = int(round((base_fp.window_start_seconds + base_start) * INTRO_TICKS))
 
-    # ================== 【新增：偷懒模式核心逻辑】 ==================
-    # 计算模板集中，片尾起点距离视频结尾的平均时长 (Ticks)
-    tail_durations = []
+    # 计算第一批次的平均片尾时长
+    tail_durations_batch = []
     for sha1, start_ticks in starts_by_sha1.items():
         runtime_sec = _cached_runtime_seconds(sha1)
         if runtime_sec > 0:
-            tail_durations.append((runtime_sec * INTRO_TICKS) - start_ticks)
+            tail_durations_batch.append((runtime_sec * INTRO_TICKS) - start_ticks)
 
     avg_tail_duration_ticks = 0
-    if tail_durations:
-        avg_tail_duration_ticks = sum(tail_durations) / len(tail_durations)
-    # ================================================================
+    if tail_durations_batch:
+        avg_tail_duration_ticks = sum(tail_durations_batch) / len(tail_durations_batch)
 
     updated = 0
     attempted = 0
@@ -1949,23 +2015,36 @@ def _detect_and_write_credits(
         had_fingerprint = own_start is not None
 
         if own_start is None:
-            # ================== 【修改：尝试反推片尾】 ==================
-            # 增加条件：_cache_has_intro(ref.sha1) 确保该集已经成功提取了片头，才允许反推片尾
-            if avg_tail_duration_ticks > 0 and _cache_has_intro(ref.sha1):
-                runtime_sec = _cached_runtime_seconds(ref.sha1)
-                if runtime_sec > 0:
-                    # 直接用：总时长 - 平均片尾时长 = 当前集片尾起点
-                    own_start = int((runtime_sec * INTRO_TICKS) - avg_tail_duration_ticks)
-                    had_fingerprint = True
+            if avg_tail_duration_ticks > 0:
+                if _cache_has_intro(ref.sha1):
+                    runtime_sec = _cached_runtime_seconds(ref.sha1)
+                    if runtime_sec > 0:
+                        own_start = int((runtime_sec * INTRO_TICKS) - avg_tail_duration_ticks)
+                        had_fingerprint = True
+                        logger.info(
+                            "  ➜ [片头片尾提取] 《%s》S%02dE%02d 已成功提取片头，触发反推模式，按平均片尾时长反推起点。",
+                            ref.series_title,
+                            ref.season_number,
+                            ref.episode_number,
+                        )
+                else:
+                    # 第一批次中，如果没有片头，拒绝反推并标记失败
+                    _mark_detection_failure(
+                        ref,
+                        FINGERPRINT_KIND_CREDITS,
+                        scope='episode',
+                        reason='skipped_due_to_no_intro',
+                        sample_count=len(fps),
+                        episode_count=len(season_refs),
+                    )
                     logger.info(
-                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 已成功提取片头，按平均片尾时长反推起点。",
+                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 未提取到片头，拒绝反推，已标记跳过片尾。",
                         ref.series_title,
                         ref.season_number,
                         ref.episode_number,
                     )
-            # ============================================================
+                    continue
 
-            # 如果偷懒模式未触发（例如没有片头），或者获取不到总时长，则回退到原始的下载识别模式
             if own_start is None:
                 try:
                     own_start, had_fingerprint = _match_credits_with_progressive_windows(
