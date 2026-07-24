@@ -96,6 +96,7 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             s.item_type = 'Season'
             AND s.season_number > 0
             AND s.watching_status != 'NONE'
+            AND COALESCE(es.collected_count, 0) > 0
             AND (s.watching_status != 'Completed' OR s.in_library = TRUE OR COALESCE(s.force_ended, FALSE) = TRUE)
             AND (
                 (s.total_episodes = 0 OR COALESCE(es.collected_count, 0) < s.total_episodes)
