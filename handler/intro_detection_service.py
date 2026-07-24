@@ -39,6 +39,7 @@ CREDITS_SAMPLE_STEPS = (180, 300)
 INTRO_DETECTION_ALGORITHM_VERSION = 1
 MAX_WORK_EPISODES_PER_SEASON = 8
 MAX_WRITE_EPISODES_PER_JOB = 8
+BATCH_CONTINUATION_DELAY_SECONDS = 3
 MIN_INTRO_SECONDS = 18
 MAX_INTRO_SECONDS = 240
 MAX_INTRO_START_SECONDS = 360
@@ -777,7 +778,7 @@ def _process_job(job: Dict[str, Any]) -> None:
     )
     if not intro_refs and not credits_refs:
         logger.debug(
-            "  -> [intro detection] %s season %s is complete or blocked for this algorithm version; skipped.",
+            "  ➜ [片头声纹提取] 《%s》第 %s 季已完成或当前算法版本已终止，跳过。",
             target.series_title,
             target.season_number,
         )
@@ -787,6 +788,7 @@ def _process_job(job: Dict[str, Any]) -> None:
         _detect_and_write_intro(target, chapter_refs, direct_url_cache=direct_url_cache)
     if credits_refs:
         _detect_and_write_credits(target, chapter_refs, direct_url_cache=direct_url_cache)
+    _schedule_next_batch_if_needed(target, chapter_refs, trigger)
 
 
 def _detect_and_write_intro(
@@ -808,7 +810,7 @@ def _detect_and_write_intro(
 
     sample_refs = _select_template_refs(target, season_refs, FINGERPRINT_KIND_INTRO)
     if len(sample_refs) < 2:
-        logger.info("  -> [intro detection] %s season %s has fewer than 2 comparable episodes; skipped.", target.series_title, target.season_number)
+        logger.info("  ➜ [片头声纹提取] 《%s》第 %s 季可比对分集不足 2 集，暂不提取片头。", target.series_title, target.season_number)
         return
 
     detected = None
@@ -834,7 +836,7 @@ def _detect_and_write_intro(
             selected_sample_seconds = sample_seconds
             break
     if len(fps) < 2:
-        logger.info("  -> [intro detection] %s season %s has fewer than 2 valid fingerprints; skipped.", target.series_title, target.season_number)
+        logger.info("  ➜ [片头声纹提取] 《%s》第 %s 季有效片头指纹不足，暂不写入。", target.series_title, target.season_number)
         return
     if not detected:
         _mark_detection_failure(
@@ -845,7 +847,7 @@ def _detect_and_write_intro(
             sample_count=len(fps),
             episode_count=len(season_refs),
         )
-        logger.info("  -> [intro detection] %s season %s has no stable common segment; blocked for this algorithm version.", target.series_title, target.season_number)
+        logger.info("  ➜ [片头声纹提取] 《%s》第 %s 季未找到稳定公共片头，当前算法版本不再重试。", target.series_title, target.season_number)
         return
 
     base_fp, base_start, base_end, ranges_by_sha1, matched = detected
@@ -877,7 +879,7 @@ def _detect_and_write_intro(
             updated += 1
         time.sleep(0)
     logger.info(
-        "  -> [intro detection] %s season %s intro %.1fs-%.1fs; streamed writes %s/%s episodes (template %s/%s, window %ss, matches %s).",
+        "  ➜ [片头声纹提取] 《%s》第 %s 季已识别片头 %.1fs-%.1fs，本轮逐集回写 %s/%s 集（模板 %s/%s 集，窗口 %s 秒，命中 %s 组）。",
         target.series_title,
         target.season_number,
         base_start,
@@ -889,6 +891,45 @@ def _detect_and_write_intro(
         selected_sample_seconds,
         matched,
     )
+
+
+def _schedule_next_batch_if_needed(
+    target: EpisodeRef,
+    season_refs: Sequence[EpisodeRef],
+    trigger: str,
+) -> None:
+    has_intro = bool(_pending_detection_refs(season_refs, FINGERPRINT_KIND_INTRO, limit=1))
+    has_credits = _credits_detection_enabled() and bool(
+        _pending_detection_refs(season_refs, FINGERPRINT_KIND_CREDITS, limit=1)
+    )
+    if not has_intro and not has_credits:
+        return
+
+    def enqueue_later() -> None:
+        try:
+            _queue.put_nowait({
+                "kind": "episode",
+                "episode": _episode_to_payload(target),
+                "trigger": trigger,
+                "queued_at": time.time(),
+                "continuation": True,
+            })
+            logger.debug(
+                "  ➜ [片头声纹提取] 《%s》第 %s 季仍有未处理分集，已排入下一批（延迟 %s 秒）。",
+                target.series_title,
+                target.season_number,
+                BATCH_CONTINUATION_DELAY_SECONDS,
+            )
+        except queue.Full:
+            logger.warning(
+                "  ➜ [片头声纹提取] 《%s》第 %s 季下一批入队失败：队列已满。",
+                target.series_title,
+                target.season_number,
+            )
+
+    timer = threading.Timer(BATCH_CONTINUATION_DELAY_SECONDS, enqueue_later)
+    timer.daemon = True
+    timer.start()
 
 
 def _resolve_episode_ref(job: Dict[str, Any]) -> Optional[EpisodeRef]:
