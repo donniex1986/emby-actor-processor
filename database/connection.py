@@ -583,6 +583,25 @@ def init_db():
                     )
                 """)
 
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS p115_intro_detection_failures (
+                        failure_key TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        algorithm_version INTEGER NOT NULL,
+                        scope TEXT NOT NULL DEFAULT 'season',
+                        series_tmdb_id TEXT NOT NULL DEFAULT '',
+                        season_number INTEGER NOT NULL DEFAULT 0,
+                        sha1 TEXT NOT NULL DEFAULT '',
+                        reason TEXT NOT NULL DEFAULT '',
+                        sample_count INTEGER NOT NULL DEFAULT 0,
+                        episode_count INTEGER NOT NULL DEFAULT 0,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        PRIMARY KEY (failure_key, kind, algorithm_version)
+                    )
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_intro_detection_failures_kind ON p115_intro_detection_failures(kind, algorithm_version)")
+
                 logger.trace("  ➜ 正在创建 'p115_upload_records' 表 (115 上传任务与完成记录)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS p115_upload_records (

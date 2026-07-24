@@ -768,22 +768,24 @@ def _process_job(job: Dict[str, Any]) -> None:
         )
         return
     chapter_refs = season_refs
-    _restore_cached_chapters_to_emby(chapter_refs)
-    intro_needed = any(not _cache_has_intro(ref.sha1) for ref in chapter_refs)
-    credits_needed = _credits_detection_enabled() and any(
-        not _cache_has_credits(ref.sha1) for ref in chapter_refs
+    _restore_cached_chapters_to_emby(chapter_refs[:MAX_WRITE_EPISODES_PER_JOB])
+    intro_refs = _pending_detection_refs(chapter_refs, FINGERPRINT_KIND_INTRO, limit=MAX_WRITE_EPISODES_PER_JOB)
+    credits_refs = (
+        _pending_detection_refs(chapter_refs, FINGERPRINT_KIND_CREDITS, limit=MAX_WRITE_EPISODES_PER_JOB)
+        if _credits_detection_enabled()
+        else []
     )
-    if not intro_needed and not credits_needed:
+    if not intro_refs and not credits_refs:
         logger.debug(
-            "  ➜ [片头声纹提取] 《%s》第 %s 季的片头片尾章节已齐，跳过。",
+            "  -> [intro detection] %s season %s is complete or blocked for this algorithm version; skipped.",
             target.series_title,
             target.season_number,
         )
         return
     direct_url_cache: Dict[str, Tuple[str, str]] = {}
-    if intro_needed:
+    if intro_refs:
         _detect_and_write_intro(target, chapter_refs, direct_url_cache=direct_url_cache)
-    if credits_needed:
+    if credits_refs:
         _detect_and_write_credits(target, chapter_refs, direct_url_cache=direct_url_cache)
 
 
@@ -793,8 +795,20 @@ def _detect_and_write_intro(
     *,
     direct_url_cache: Optional[Dict[str, Tuple[str, str]]] = None,
 ) -> None:
-    if len(season_refs) < 2:
-        logger.info("  ➜ [片头声纹提取] 《%s》第 %s 季可用于片头比对的非纯净分集不足 2 集，暂不提取。", target.series_title, target.season_number)
+    if _has_detection_failure(_failure_key_for_season(target), FINGERPRINT_KIND_INTRO):
+        return
+
+    pending_refs = _pending_detection_refs(
+        season_refs,
+        FINGERPRINT_KIND_INTRO,
+        limit=MAX_WRITE_EPISODES_PER_JOB,
+    )
+    if not pending_refs:
+        return
+
+    sample_refs = _select_template_refs(target, season_refs, FINGERPRINT_KIND_INTRO)
+    if len(sample_refs) < 2:
+        logger.info("  -> [intro detection] %s season %s has fewer than 2 comparable episodes; skipped.", target.series_title, target.season_number)
         return
 
     detected = None
@@ -802,7 +816,7 @@ def _detect_and_write_intro(
     selected_sample_seconds = 0
     for sample_seconds in INTRO_SAMPLE_STEPS:
         fps = []
-        for ref in season_refs:
+        for ref in sample_refs:
             fp = _load_or_extract_fingerprint(
                 ref,
                 requested_sample_seconds=sample_seconds,
@@ -820,18 +834,24 @@ def _detect_and_write_intro(
             selected_sample_seconds = sample_seconds
             break
     if len(fps) < 2:
-        logger.info("  ➜ [片头声纹提取] 《%s》第 %s 季有效片头指纹不足，暂不写入。", target.series_title, target.season_number)
+        logger.info("  -> [intro detection] %s season %s has fewer than 2 valid fingerprints; skipped.", target.series_title, target.season_number)
         return
     if not detected:
-        logger.info("  ➜ [片头声纹提取] 《%s》第 %s 季未找到稳定公共片头。", target.series_title, target.season_number)
+        _mark_detection_failure(
+            target,
+            FINGERPRINT_KIND_INTRO,
+            scope='season',
+            reason='no_common_intro',
+            sample_count=len(fps),
+            episode_count=len(season_refs),
+        )
+        logger.info("  -> [intro detection] %s season %s has no stable common segment; blocked for this algorithm version.", target.series_title, target.season_number)
         return
 
     base_fp, base_start, base_end, ranges_by_sha1, matched = detected
     updated = 0
     attempted = 0
-    for ref in season_refs:
-        if _cache_has_intro(ref.sha1):
-            continue
+    for ref in pending_refs:
         attempted += 1
         own_range = ranges_by_sha1.get(ref.sha1)
         if not own_range:
@@ -844,19 +864,29 @@ def _detect_and_write_intro(
                 direct_url_cache=direct_url_cache,
             )
         if not own_range:
+            _mark_detection_failure(
+                ref,
+                FINGERPRINT_KIND_INTRO,
+                scope='episode',
+                reason='no_episode_intro_match',
+                sample_count=len(fps),
+                episode_count=len(season_refs),
+            )
             continue
         if _write_intro_for_episode(ref, own_range[0], own_range[1]):
             updated += 1
+        time.sleep(0)
     logger.info(
-        "  ➜ [片头声纹提取] 《%s》第 %s 季已识别片头 %.1fs-%.1fs，整季回写 %s/%s 集（窗口 %s 秒，样本 %s 集，命中比对 %s 组）。",
+        "  -> [intro detection] %s season %s intro %.1fs-%.1fs; streamed writes %s/%s episodes (template %s/%s, window %ss, matches %s).",
         target.series_title,
         target.season_number,
         base_start,
         base_end,
         updated,
         attempted,
-        selected_sample_seconds,
         len(fps),
+        len(sample_refs),
+        selected_sample_seconds,
         matched,
     )
 
@@ -981,9 +1011,149 @@ def _season_has_intro_detection_cache(target: EpisodeRef) -> bool:
 
 
 def _needs_intro_backfill(ref: EpisodeRef, include_credits: bool) -> bool:
+    return _needs_kind_detection(ref, FINGERPRINT_KIND_INTRO) or (
+        include_credits and _needs_kind_detection(ref, FINGERPRINT_KIND_CREDITS)
+    )
+
+
+def _needs_kind_detection(ref: EpisodeRef, kind: str) -> bool:
     if not ref.sha1 or not ref.pick_code:
         return False
-    return (not _cache_has_intro(ref.sha1)) or (include_credits and not _cache_has_credits(ref.sha1))
+    if _cache_has_kind(ref, kind):
+        return False
+    return not _is_detection_failed(ref, kind)
+
+
+def _cache_has_kind(ref: EpisodeRef, kind: str) -> bool:
+    return _cache_has_credits(ref.sha1) if kind == FINGERPRINT_KIND_CREDITS else _cache_has_intro(ref.sha1)
+
+
+def _pending_detection_refs(
+    refs: Sequence[EpisodeRef],
+    kind: str,
+    *,
+    limit: int = 0,
+) -> List[EpisodeRef]:
+    pending: List[EpisodeRef] = []
+    for ref in refs:
+        if _needs_kind_detection(ref, kind):
+            pending.append(ref)
+            if limit and len(pending) >= limit:
+                break
+    return pending
+
+
+def _select_template_refs(
+    target: EpisodeRef,
+    refs: Sequence[EpisodeRef],
+    kind: str,
+) -> List[EpisodeRef]:
+    selected: List[EpisodeRef] = []
+    seen = set()
+
+    def add(ref: Optional[EpisodeRef]) -> None:
+        if not ref or not ref.sha1 or not ref.pick_code or ref.sha1 in seen:
+            return
+        if _has_detection_failure(_failure_key_for_episode(ref), kind):
+            return
+        selected.append(ref)
+        seen.add(ref.sha1)
+
+    for ref in refs:
+        if ref.sha1 == target.sha1 or ref.episode_number == target.episode_number:
+            add(ref)
+            break
+    for ref in refs:
+        add(ref)
+        if len(selected) >= MAX_WORK_EPISODES_PER_SEASON:
+            break
+    return selected[:MAX_WORK_EPISODES_PER_SEASON]
+
+
+def _is_detection_failed(ref: EpisodeRef, kind: str) -> bool:
+    return _has_detection_failure(_failure_key_for_season(ref), kind) or _has_detection_failure(_failure_key_for_episode(ref), kind)
+
+
+def _failure_key_for_season(ref: EpisodeRef) -> str:
+    return f"season:{ref.series_tmdb_id}:{int(ref.season_number or 0)}"
+
+
+def _failure_key_for_episode(ref: EpisodeRef) -> str:
+    return f"episode:{ref.sha1}"
+
+
+def _has_detection_failure(failure_key: str, kind: str) -> bool:
+    failure_key = str(failure_key or '').strip()
+    kind = str(kind or FINGERPRINT_KIND_INTRO).strip().lower()
+    if not failure_key:
+        return False
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM p115_intro_detection_failures
+                    WHERE failure_key=%s
+                      AND kind=%s
+                      AND algorithm_version=%s
+                    LIMIT 1
+                    """,
+                    (failure_key, kind, INTRO_DETECTION_ALGORITHM_VERSION),
+                )
+                return bool(cur.fetchone())
+    except Exception as e:
+        logger.debug("  -> [intro detection] failure marker access failed %s/%s: %s", kind, failure_key, e)
+        return False
+
+
+def _mark_detection_failure(
+    ref: EpisodeRef,
+    kind: str,
+    *,
+    scope: str,
+    reason: str,
+    sample_count: int = 0,
+    episode_count: int = 0,
+) -> None:
+    kind = str(kind or FINGERPRINT_KIND_INTRO).strip().lower()
+    scope = 'episode' if scope == 'episode' else 'season'
+    failure_key = _failure_key_for_episode(ref) if scope == 'episode' else _failure_key_for_season(ref)
+    if not failure_key:
+        return
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO p115_intro_detection_failures(
+                        failure_key, kind, algorithm_version, scope,
+                        series_tmdb_id, season_number, sha1, reason,
+                        sample_count, episode_count, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (failure_key, kind, algorithm_version)
+                    DO UPDATE SET
+                        reason = EXCLUDED.reason,
+                        sample_count = EXCLUDED.sample_count,
+                        episode_count = EXCLUDED.episode_count,
+                        updated_at = NOW()
+                    """,
+                    (
+                        failure_key,
+                        kind,
+                        INTRO_DETECTION_ALGORITHM_VERSION,
+                        scope,
+                        ref.series_tmdb_id,
+                        int(ref.season_number or 0),
+                        ref.sha1 if scope == 'episode' else '',
+                        str(reason or '')[:200],
+                        int(sample_count or 0),
+                        int(episode_count or 0),
+                    ),
+                )
+            conn.commit()
+    except Exception as e:
+        logger.debug("  -> [intro detection] failure marker access failed %s/%s: %s", kind, failure_key, e)
 
 
 def _load_active_watchlist_episode_refs(
@@ -1499,7 +1669,9 @@ def _detect_common_intro_for_base(
     max_start_seconds: float,
 ) -> Optional[Tuple[FingerprintRef, float, float, Dict[str, Tuple[int, int]], int]]:
     segments: List[Tuple[FingerprintRef, float, float, float, float]] = []
-    for fp in fps:
+    for index, fp in enumerate(fps):
+        if index and index % CPU_YIELD_INTERVAL == 0:
+            time.sleep(0)
         if fp is base:
             continue
         seg = _find_best_common_segment(base, fp, max_start_seconds=max_start_seconds)
@@ -1549,12 +1721,28 @@ def _detect_and_write_credits(
     *,
     direct_url_cache: Optional[Dict[str, Tuple[str, str]]] = None,
 ) -> None:
+    if _has_detection_failure(_failure_key_for_season(target), FINGERPRINT_KIND_CREDITS):
+        return
+
+    pending_refs = _pending_detection_refs(
+        season_refs,
+        FINGERPRINT_KIND_CREDITS,
+        limit=MAX_WRITE_EPISODES_PER_JOB,
+    )
+    if not pending_refs:
+        return
+
+    sample_refs = _select_template_refs(target, season_refs, FINGERPRINT_KIND_CREDITS)
+    if len(sample_refs) < 2:
+        logger.info("  -> [intro detection] %s season %s has fewer than 2 comparable episodes; skipped.", target.series_title, target.season_number)
+        return
+
     detected = None
     fps: List[FingerprintRef] = []
     selected_sample_seconds = 0
     for sample_seconds in CREDITS_SAMPLE_STEPS:
         fps = []
-        for ref in season_refs:
+        for ref in sample_refs:
             fp = _load_or_extract_fingerprint(
                 ref,
                 kind=FINGERPRINT_KIND_CREDITS,
@@ -1574,32 +1762,38 @@ def _detect_and_write_credits(
             if sample_seconds >= CREDITS_SAMPLE_STEPS[-1]:
                 detected = None
                 logger.info(
-                    "  ➜ [片头声纹提取] 《%s》第 %s 季片尾起点超出最大 %s 秒窗口，已放弃写入不准确的片尾章节。",
+                    "  -> [intro detection] %s season %s credits start exceeds %s-second window; skipped unsafe credits chapter.",
                     target.series_title,
                     target.season_number,
                     sample_seconds,
                 )
                 break
             logger.info(
-                "  ➜ [片头声纹提取] 《%s》第 %s 季片尾边界仍贴近 %s 秒窗口起点，继续向前扩展。",
+                "  -> [intro detection] %s season %s credits boundary touches %s-second window start; extending.",
                 target.series_title,
                 target.season_number,
                 sample_seconds,
             )
     if len(fps) < 2:
-        logger.info("  ➜ [片头声纹提取] 《%s》第 %s 季有效片尾指纹不足，暂不写入。", target.series_title, target.season_number)
+        logger.info("  -> [intro detection] %s season %s has fewer than 2 valid fingerprints; skipped.", target.series_title, target.season_number)
         return
     if not detected:
-        logger.info("  ➜ [片头声纹提取] 《%s》第 %s 季未找到稳定公共片尾。", target.series_title, target.season_number)
+        _mark_detection_failure(
+            target,
+            FINGERPRINT_KIND_CREDITS,
+            scope='season',
+            reason='no_common_credits',
+            sample_count=len(fps),
+            episode_count=len(season_refs),
+        )
+        logger.info("  -> [intro detection] %s season %s has no stable common segment; blocked for this algorithm version.", target.series_title, target.season_number)
         return
     base_fp, base_start, base_end, starts_by_sha1, matched = detected
     target_start = int(round((base_fp.window_start_seconds + base_start) * INTRO_TICKS))
 
     updated = 0
     attempted = 0
-    for ref in season_refs:
-        if _cache_has_credits(ref.sha1):
-            continue
+    for ref in pending_refs:
         attempted += 1
         own_start = starts_by_sha1.get(ref.sha1)
         if own_start is None:
@@ -1612,18 +1806,28 @@ def _detect_and_write_credits(
                 direct_url_cache=direct_url_cache,
             )
         if own_start is None:
+            _mark_detection_failure(
+                ref,
+                FINGERPRINT_KIND_CREDITS,
+                scope='episode',
+                reason='no_episode_credits_match',
+                sample_count=len(fps),
+                episode_count=len(season_refs),
+            )
             continue
         if _write_credits_for_episode(ref, own_start):
             updated += 1
+        time.sleep(0)
     logger.info(
-        "  ➜ [片头声纹提取] 《%s》第 %s 季已识别片尾起点 %.1fs，整季回写 %s/%s 集（窗口 %s 秒，样本 %s 集，命中比对 %s 组）。",
+        "  -> [intro detection] %s season %s credits start %.1fs; streamed writes %s/%s episodes (template %s/%s, window %ss, matches %s).",
         target.series_title,
         target.season_number,
         target_start / INTRO_TICKS,
         updated,
         attempted,
-        selected_sample_seconds,
         len(fps),
+        len(sample_refs),
+        selected_sample_seconds,
         matched,
     )
 
@@ -1650,7 +1854,9 @@ def _detect_common_credits_for_base(
     max_start_seconds: float,
 ) -> Optional[Tuple[FingerprintRef, float, float, Dict[str, int], int]]:
     segments: List[Tuple[FingerprintRef, float, float, float, float]] = []
-    for fp in fps:
+    for index, fp in enumerate(fps):
+        if index and index % CPU_YIELD_INTERVAL == 0:
+            time.sleep(0)
         if fp is base:
             continue
         seg = _find_best_common_segment(base, fp, max_start_seconds=max_start_seconds)
@@ -1875,6 +2081,8 @@ def _find_template_matched_range(
 
     index: Dict[Tuple[int, Tuple[int, ...]], List[int]] = {}
     for j in range(max_other_start + 1):
+        if j and j % CPU_YIELD_INTERVAL == 0:
+            time.sleep(0)
         if j + k > len(b):
             break
         for mask_index, mask in enumerate(FINGERPRINT_ANCHOR_MASKS):
@@ -1886,6 +2094,8 @@ def _find_template_matched_range(
     best: Optional[Tuple[int, int, int]] = None
     best_score: Tuple[int, int, int] = (0, 0, 0)
     for i in range(template_start, max(template_start, template_end - k) + 1):
+        if i and i % CPU_YIELD_INTERVAL == 0:
+            time.sleep(0)
         if i + k > len(a):
             break
         for mask_index, mask in enumerate(FINGERPRINT_ANCHOR_MASKS):
@@ -1945,6 +2155,8 @@ def _find_best_common_segment(
     index: Dict[Tuple[int, Tuple[int, ...]], List[int]] = {}
     upper_b = min(len(b) - k + 1, max_start_idx + 1)
     for j in range(max(0, upper_b)):
+        if j and j % CPU_YIELD_INTERVAL == 0:
+            time.sleep(0)
         for mask_index, mask in enumerate(FINGERPRINT_ANCHOR_MASKS):
             key = (mask_index, tuple(value & mask for value in b[j:j + k]))
             index.setdefault(key, []).append(j)
@@ -1952,6 +2164,8 @@ def _find_best_common_segment(
     best_i = best_j = best_len = 0
     upper_a = min(len(a) - k + 1, max_start_idx + 1)
     for i in range(max(0, upper_a)):
+        if i and i % CPU_YIELD_INTERVAL == 0:
+            time.sleep(0)
         for mask_index, mask in enumerate(FINGERPRINT_ANCHOR_MASKS):
             key = (mask_index, tuple(value & mask for value in a[i:i + k]))
             hits = index.get(key)
@@ -2003,6 +2217,8 @@ def _extend_fuzzy_match(
             misses += 1
             if misses > FINGERPRINT_MAX_CONSECUTIVE_MISSES:
                 break
+        if total and total % (CPU_YIELD_INTERVAL * 16) == 0:
+            time.sleep(0)
         i += direction
         j += direction
     return last_good_total, last_good_matches
