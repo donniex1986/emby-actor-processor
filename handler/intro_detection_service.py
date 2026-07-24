@@ -1848,19 +1848,16 @@ def _detect_and_write_credits(
     if not pending_refs:
         return
 
-    # ================== 【新增：跨批次全局偷懒模式】 ==================
-    # 尝试从本季已经成功提取片尾的集中，计算平均片尾时长
+    # ================== 【跨批次全局偷懒模式】 ==================
     tail_durations = []
     for ref in season_refs:
         if ref.sha1 and not _needs_kind_detection(ref, FINGERPRINT_KIND_CREDITS):
-            # 说明这集已经有片尾了
             _, credits_start = _cached_chapter_ticks(ref.sha1)
             if credits_start is not None:
                 runtime_sec = _cached_runtime_seconds(ref.sha1)
                 if runtime_sec > 0:
                     tail_durations.append((runtime_sec * INTRO_TICKS) - credits_start)
 
-    # 如果本季已经有至少 2 集成功提取了片尾，直接触发全局偷懒，跳过所有下载！
     if len(tail_durations) >= 2:
         global_avg_tail_ticks = sum(tail_durations) / len(tail_durations)
         logger.info(
@@ -1887,17 +1884,9 @@ def _detect_and_write_credits(
                             ref.episode_number,
                         )
             else:
-                # 没有片头，拒绝偷懒，并直接标记片尾失败，防止下一批次无限重试
-                _mark_detection_failure(
-                    ref,
-                    FINGERPRINT_KIND_CREDITS,
-                    scope='episode',
-                    reason='skipped_due_to_no_intro',
-                    sample_count=0,
-                    episode_count=len(season_refs),
-                )
+                # 【核心修复】：不打失败标记！只打印日志，保留 pending 状态，等片头成功后再反推
                 logger.info(
-                    "  ➜ [片头片尾提取] 《%s》S%02dE%02d 未提取到片头，拒绝反推，已标记跳过片尾。",
+                    "  ➜ [片头片尾提取] 《%s》S%02dE%02d 暂无片头，跳过本次片尾反推，等待片头提取成功后重试。",
                     ref.series_title,
                     ref.season_number,
                     ref.episode_number,
@@ -1996,7 +1985,6 @@ def _detect_and_write_credits(
     base_fp, base_start, base_end, starts_by_sha1, matched = detected
     target_start = int(round((base_fp.window_start_seconds + base_start) * INTRO_TICKS))
 
-    # 计算第一批次的平均片尾时长
     tail_durations_batch = []
     for sha1, start_ticks in starts_by_sha1.items():
         runtime_sec = _cached_runtime_seconds(sha1)
@@ -2028,23 +2016,16 @@ def _detect_and_write_credits(
                             ref.episode_number,
                         )
                 else:
-                    # 第一批次中，如果没有片头，拒绝反推并标记失败
-                    _mark_detection_failure(
-                        ref,
-                        FINGERPRINT_KIND_CREDITS,
-                        scope='episode',
-                        reason='skipped_due_to_no_intro',
-                        sample_count=len(fps),
-                        episode_count=len(season_refs),
-                    )
+                    # 【核心修复】：第一批次中，如果没有片头，同样不打失败标记，直接跳过本集，也不去下载音频
                     logger.info(
-                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 未提取到片头，拒绝反推，已标记跳过片尾。",
+                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 暂无片头，跳过本次片尾反推，等待片头提取成功后重试。",
                         ref.series_title,
                         ref.season_number,
                         ref.episode_number,
                     )
                     continue
 
+            # 只有在连平均片尾时长都没算出来的情况下（极罕见），才会走到这里去下载音频比对
             if own_start is None:
                 try:
                     own_start, had_fingerprint = _match_credits_with_progressive_windows(
