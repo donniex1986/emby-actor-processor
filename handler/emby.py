@@ -1698,8 +1698,11 @@ def get_emby_item_image_bytes(
 
     response = None
     try:
+        image_path = f"Images/{image_type}"
+        if str(image_type or "").strip().lower() == "backdrop":
+            image_path = "Images/Backdrop/0"
         response = emby_client.get(
-            f"{emby_server_url.rstrip('/')}/Items/{item_id}/Images/{image_type}",
+            f"{emby_server_url.rstrip('/')}/Items/{item_id}/{image_path}",
             params={"api_key": emby_api_key},
             stream=True,
             timeout=30,

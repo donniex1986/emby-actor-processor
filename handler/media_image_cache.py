@@ -214,6 +214,17 @@ def cache_remote_image(source_url: str):
         return None
 
 
+def cache_image_bytes(source_url: str, image_data: bytes, mime_type: str, *, force: bool = False):
+    source_url = str(source_url or "").strip()
+    if (not force and not image_archive_enabled()) or not source_url:
+        return None
+    try:
+        return _store_bytes(source_url, image_data, mime_type)
+    except Exception as exc:
+        logger.warning("  ➜ [图片仓库] 保存上传图片失败: %s", exc)
+        return None
+
+
 def get_cached_image(content_hash: str):
     content_hash = str(content_hash or "").strip().lower()
     if not re.fullmatch(r"[a-f0-9]{64}", content_hash):
@@ -275,6 +286,19 @@ def _delete_file_if_unreferenced(content_hash: str):
                     (content_hash,),
                 )
                 metadata_used = bool((cursor.fetchone() or {}).get("used"))
+                if not metadata_used:
+                    token = cache_token(content_hash)
+                    cursor.execute(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1 FROM media_metadata
+                            WHERE poster_path=%s OR backdrop_path=%s
+                               OR logo_path=%s OR thumb_path=%s
+                        ) AS used
+                        """,
+                        (token, token, token, token),
+                    )
+                    metadata_used = bool((cursor.fetchone() or {}).get("used"))
     except Exception as exc:
         logger.warning("  ➜ [图片仓库] 检查截图引用失败: %s", exc)
         return
@@ -542,6 +566,10 @@ def archive_policy_images(images, base_url: str):
 
     for item in values:
         source = str(item.get("source_url") or "").strip()
+        if source.startswith(CACHE_TOKEN_PREFIX):
+            token_hash = source[len(CACHE_TOKEN_PREFIX):].strip().lower()
+            if re.fullmatch(r"[a-f0-9]{64}", token_hash):
+                item["content_hash"] = token_hash
         cached = cached_by_source.get(source)
         if cached:
             item["content_hash"] = cached["content_hash"]

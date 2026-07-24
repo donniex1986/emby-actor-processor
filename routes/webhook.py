@@ -2429,21 +2429,10 @@ def emby_webhook():
         )
 
         image = data.get("Image") if isinstance(data.get("Image"), dict) else {}
-        image_type = str(image.get("Type") or "").strip()
+        image_type = str(image.get("Type") or "").strip().split("/", 1)[0].title()
         image_url = str(image.get("Url") or "").strip()
-        if not image_type or not image_url:
+        if not image_type:
             return jsonify({"status": "image_update_observed", "item_id": id_to_process}), 200
-
-        parsed = urlparse(image_url)
-        proxied_url = parse_qs(parsed.query).get("url", [None])[0]
-        if proxied_url:
-            parsed = urlparse(unquote(proxied_url))
-        marker = "/t/p/"
-        marker_index = parsed.path.find(marker)
-        if marker_index < 0:
-            logger.warning("  ➜ [图片更新] 所选图片不是 TMDb 图片，未写入 ETK 缓存：%s", image_url)
-            return jsonify({"status": "image_update_observed", "item_id": id_to_process}), 200
-        image_path = "/" + parsed.path[marker_index + len(marker):].split("/", 1)[-1].lstrip("/")
 
         def _number(value):
             try:
@@ -2465,12 +2454,59 @@ def emby_webhook():
             logger.warning("  ➜ [图片更新] 无法定位 '%s' 的 ETK 元数据记录。", original_item_name)
             return jsonify({"status": "image_update_identity_not_found", "item_id": original_item_id}), 200
 
+        image_path = None
+        source_url = image_url
+        if image_url:
+            parsed = urlparse(image_url)
+            proxied_url = parse_qs(parsed.query).get("url", [None])[0]
+            if proxied_url:
+                parsed = urlparse(unquote(proxied_url))
+            marker = "/t/p/"
+            marker_index = parsed.path.find(marker)
+            if marker_index >= 0:
+                image_path = "/" + parsed.path[marker_index + len(marker):].split("/", 1)[-1].lstrip("/")
+                source_url = f"https://image.tmdb.org/t/p/original/{image_path.lstrip('/')}"
+
+        content_hash = ""
+        if image_path:
+            metadata_image_value = image_path
+        else:
+            current_image = emby.get_emby_item_image_bytes(
+                original_item_id,
+                image_type,
+                processor.emby_url,
+                processor.emby_api_key,
+            )
+            if not current_image:
+                logger.warning(
+                    "  ➜ [图片更新] 无法读取 '%s' 的当前 Emby %s 图片，未写入 ETK 缓存。",
+                    original_item_name, image_type,
+                )
+                return jsonify({"status": "image_update_observed", "item_id": original_item_id}), 200
+            image_bytes, mime_type = current_image
+            if not source_url:
+                source_url = (
+                    f"emby-manual-image://{original_item_type}/{identity['tmdb_id']}/"
+                    f"{identity.get('season_number') or 0}/{identity.get('episode_number') or 0}/"
+                    f"{image_type}/{original_item_id}/{int(time.time())}"
+                )
+            from handler.media_image_cache import cache_image_bytes, cache_token
+            cached = cache_image_bytes(source_url, image_bytes, mime_type, force=True)
+            if not cached or not cached.get("content_hash"):
+                logger.warning(
+                    "  ➜ [图片更新] '%s' 的 %s 图片写入 ETK 图片仓库失败。",
+                    original_item_name, image_type,
+                )
+                return jsonify({"status": "image_update_archive_failed", "item_id": original_item_id}), 200
+            content_hash = str(cached["content_hash"])
+            metadata_image_value = cache_token(content_hash)
+
         updated = update_cached_image_path(
             identity["tmdb_id"],
             identity["media_type"],
             original_item_type,
             image_type,
-            image_path,
+            metadata_image_value,
             season_number=identity.get("season_number"),
             episode_number=identity.get("episode_number"),
         )
@@ -2479,10 +2515,11 @@ def emby_webhook():
             original_item_type,
             identity["tmdb_id"],
             image_type,
-            f"https://image.tmdb.org/t/p/original/{image_path.lstrip('/')}",
+            source_url,
             request.host_url,
             season_number=identity.get("season_number"),
             episode_number=identity.get("episode_number"),
+            content_hash=content_hash,
         )
         updated = max(updated, policy_updated)
         logger.info(

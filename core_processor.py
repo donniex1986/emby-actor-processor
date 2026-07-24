@@ -4361,61 +4361,182 @@ class MediaProcessor:
             return False
 
     # --- 手动替换媒体图片 ---
-    def update_media_image_manually(self, item_id: str, image_type: str, image_url: Optional[str] = None, image_bytes: Optional[bytes] = None) -> Tuple[bool, str]:
+    def update_media_image_manually(
+        self,
+        item_id: str,
+        image_type: str,
+        image_url: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
+        content_type: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """
-        手动更新媒体图片。直接覆盖物理文件，并通知 Emby 刷新。
+        手动更新媒体图片。通过 Emby 图片 API 写入缓存，并同步 ETK 图片策略/仓库。
         支持传入图片直链 (image_url) 或 二进制文件流 (image_bytes)。
         """
-        # 1. 校验图片类型和对应的文件名
         valid_types = {
-            'poster': 'poster.jpg',
-            'clearlogo': 'clearlogo.png',
-            'fanart': 'fanart.jpg',
-            'landscape': 'landscape.jpg'
+            'poster': 'Primary',
+            'clearlogo': 'Logo',
+            'fanart': 'Backdrop',
+            'landscape': 'Thumb',
         }
+        image_type = str(image_type or '').strip()
         if image_type not in valid_types:
             return False, f"不支持的图片类型: {image_type}"
+        emby_image_type = valid_types[image_type]
 
         try:
-            # 2. 获取媒体的物理路径
             item_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
-            if not item_details or not item_details.get("Path"):
-                return False, "无法获取该媒体的物理路径，请确保文件存在。"
+            if not item_details:
+                return False, "无法获取该媒体的 Emby 详情。"
 
-            media_path = item_details.get("Path")
-            target_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
-            
-            # 智能判断：如果是剧集，且当前在 Season 文件夹内，需要退回上一级根目录
-            if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(target_dir), re.IGNORECASE):
-                target_dir = os.path.dirname(target_dir)
+            item_type = str(item_details.get("Type") or "").strip()
+            if item_type not in {"Movie", "Series", "Season", "Episode"}:
+                return False, f"不支持为 {item_type or '未知类型'} 同步 ETK 图片缓存。"
+            media_path = str(item_details.get("Path") or "").strip()
+            if not media_path:
+                return False, "无法定位该媒体的路径，不能同步 ETK 图片缓存。"
 
-            target_file_path = os.path.join(target_dir, valid_types[image_type])
-            logger.info(f"  ➜ [手动换图] 准备覆盖物理文件: {target_file_path}")
+            def _number(value):
+                try:
+                    return int(value) if value not in (None, "") else None
+                except (TypeError, ValueError):
+                    return None
 
-            # 3. 保存图片
-            if image_bytes:
-                # 模式 A: 直接保存上传的文件流
-                with open(target_file_path, 'wb') as f:
-                    f.write(image_bytes)
-                logger.info(f"  ➜ [手动换图] 成功保存上传的图片流。")
-                
-            elif image_url:
-                # 模式 B: 下载网络图片
+            season_number = _number(item_details.get("IndexNumber")) if item_type == "Season" else (
+                _number(item_details.get("ParentIndexNumber"))
+            )
+            episode_number = _number(item_details.get("IndexNumber")) if item_type == "Episode" else None
+
+            from database.metadata_provider_db import (
+                resolve_metadata_identity_by_path,
+                update_cached_image_path,
+            )
+            identity = resolve_metadata_identity_by_path(
+                media_path,
+                item_type,
+                season_number=season_number,
+                episode_number=episode_number,
+            )
+            if not identity or not identity.get("tmdb_id"):
+                return False, "无法定位该媒体的 ETK 元数据记录，未执行图片更改。"
+
+            source_url = str(image_url or "").strip()
+            image_data = image_bytes or b""
+            mime_type = str(content_type or "").split(";", 1)[0].strip().lower()
+
+            def _detect_mime(data: bytes, declared: str = "", source: str = "") -> str:
+                import mimetypes
+                from urllib.parse import urlparse
+
+                declared = str(declared or "").split(";", 1)[0].strip().lower()
+                if declared.startswith("image/"):
+                    return declared
+                guessed = mimetypes.guess_type(urlparse(source).path)[0] if source else None
+                if guessed and guessed.startswith("image/"):
+                    return guessed
+                if data.startswith(b"\xff\xd8\xff"):
+                    return "image/jpeg"
+                if data.startswith(b"\x89PNG\r\n\x1a\n"):
+                    return "image/png"
+                if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+                    return "image/webp"
+                if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+                    return "image/gif"
+                return ""
+
+            if not image_data and source_url:
                 import requests
+                from handler.media_image_cache import MAX_IMAGE_BYTES
+
                 proxies = config_manager.get_proxies_for_requests()
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                resp = requests.get(image_url, timeout=15, proxies=proxies, headers=headers)
-                resp.raise_for_status()
-                with open(target_file_path, 'wb') as f:
-                    f.write(resp.content)
-                logger.info(f"  ➜ [手动换图] 成功从 URL 下载并保存图片。")
-            else:
+                resp = requests.get(source_url, timeout=(15, 90), proxies=proxies, headers=headers, stream=True)
+                try:
+                    resp.raise_for_status()
+                    content_length = resp.headers.get("Content-Length")
+                    if content_length and int(content_length) > MAX_IMAGE_BYTES:
+                        return False, "图片超过 32MB 限制。"
+                    chunks = []
+                    byte_size = 0
+                    for chunk in resp.iter_content(chunk_size=128 * 1024):
+                        if not chunk:
+                            continue
+                        byte_size += len(chunk)
+                        if byte_size > MAX_IMAGE_BYTES:
+                            return False, "图片超过 32MB 限制。"
+                        chunks.append(chunk)
+                    image_data = b"".join(chunks)
+                    mime_type = _detect_mime(
+                        image_data,
+                        resp.headers.get("Content-Type") or mime_type,
+                        source_url,
+                    )
+                finally:
+                    resp.close()
+            elif not image_data:
                 return False, "未提供图片 URL 或文件数据。"
 
-            # 4. 通知 Emby 扫描新图片
-            emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
-            
-            return True, f"{image_type} 替换成功！"
+            mime_type = _detect_mime(image_data, mime_type, source_url)
+            if not mime_type:
+                return False, "上传内容不是可识别的图片。"
+
+            if not source_url:
+                import uuid
+                source_url = (
+                    f"manual-upload://{item_type}/{identity['tmdb_id']}/"
+                    f"{season_number or 0}/{episode_number or 0}/{emby_image_type}/{uuid.uuid4().hex}"
+                )
+
+            from handler.media_image_cache import cache_image_bytes, cache_token
+            cached = cache_image_bytes(source_url, image_data, mime_type, force=True)
+            if not cached or not cached.get("content_hash"):
+                return False, "图片已读取，但写入 ETK 图片仓库失败。"
+
+            logger.info(
+                "  ➜ [手动换图] 准备通过 Emby 图片 API 上传 Item %s 的 %s 图片。",
+                item_id, emby_image_type,
+            )
+            if not emby.upload_item_image(
+                self.emby_url,
+                self.emby_api_key,
+                item_id,
+                image_data,
+                content_type=mime_type,
+                image_type=emby_image_type,
+                delete_existing=True,
+            ):
+                return False, "上传图片到 Emby 失败。"
+
+            content_hash = str(cached["content_hash"])
+            metadata_value = cache_token(content_hash)
+            metadata_updated = update_cached_image_path(
+                identity["tmdb_id"],
+                identity["media_type"],
+                item_type,
+                emby_image_type,
+                metadata_value,
+                season_number=identity.get("season_number"),
+                episode_number=identity.get("episode_number"),
+            )
+
+            from handler.media_image_policy import update_manual_policy_image
+            policy_updated = update_manual_policy_image(
+                item_type,
+                identity["tmdb_id"],
+                emby_image_type,
+                source_url,
+                "",
+                season_number=identity.get("season_number"),
+                episode_number=identity.get("episode_number"),
+                content_hash=content_hash,
+            )
+
+            logger.info(
+                "  ➜ [手动换图] 已同步 Emby 图片缓存、ETK 元数据缓存和图片仓库 "
+                "(metadata=%s, policy=%s, hash=%s)。",
+                metadata_updated, policy_updated, content_hash[:12],
+            )
+            return True, f"{image_type} 替换成功，已同步 Emby 与 ETK 图片仓库。"
 
         except Exception as e:
             logger.error(f"  ➜ [手动换图] 失败: {e}", exc_info=True)

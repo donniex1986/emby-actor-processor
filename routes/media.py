@@ -814,6 +814,7 @@ def api_update_media_image(item_id):
         image_type = None
         image_url = None
         image_bytes = None
+        image_content_type = None
 
         # 1. 解析请求数据 (兼容 JSON 和 FormData)
         if request.is_json:
@@ -825,6 +826,7 @@ def api_update_media_image(item_id):
             image_url = request.form.get('image_url')
             file = request.files.get('file')
             if file and file.filename:
+                image_content_type = file.content_type
                 image_bytes = file.read()
 
         # 2. 基础校验
@@ -839,7 +841,8 @@ def api_update_media_image(item_id):
             item_id=item_id,
             image_type=image_type,
             image_url=image_url,
-            image_bytes=image_bytes
+            image_bytes=image_bytes,
+            content_type=image_content_type,
         )
 
         if success:

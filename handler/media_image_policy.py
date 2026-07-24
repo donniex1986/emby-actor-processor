@@ -13,6 +13,7 @@ from database.metadata_provider_db import (
 from handler import tmdb
 from handler.media_image_cache import (
     archive_policy_images,
+    cache_image_bytes,
     discard_unreferenced_policy_sources,
 )
 
@@ -326,6 +327,10 @@ def update_manual_policy_image(
     *,
     season_number=None,
     episode_number=None,
+    content_hash=None,
+    image_data=None,
+    mime_type=None,
+    force_archive=False,
 ):
     image_type = str(image_type or "").strip().title()
     if image_type not in IMAGE_TYPES or not source_url:
@@ -347,13 +352,25 @@ def update_manual_policy_image(
             dict(item) for item in existing.get("images_json") or []
             if not (item.get("type") == image_type and int(item.get("index") or 0) == 0)
         ]
-        images.append({
+        manual_image = {
             "type": image_type,
             "index": 0,
             "source_url": str(source_url),
             "thumbnail_source_url": str(source_url),
             "manual": True,
-        })
+        }
+        content_hash = str(content_hash or "").strip().lower()
+        if not content_hash and image_data:
+            cached = cache_image_bytes(
+                str(source_url),
+                image_data,
+                mime_type or "image/jpeg",
+                force=force_archive,
+            )
+            content_hash = str((cached or {}).get("content_hash") or "").strip().lower()
+        if content_hash:
+            manual_image["content_hash"] = content_hash
+        images.append(manual_image)
         images.sort(key=lambda item: (
             IMAGE_TYPES.index(item.get("type")),
             int(item.get("index") or 0),

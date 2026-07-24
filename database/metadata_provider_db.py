@@ -267,7 +267,7 @@ def update_cached_image_path(
             )
             updated = cursor.rowcount
         conn.commit()
-    if updated:
+    if updated and not str(image_path).startswith("etk-cache://"):
         from handler.media_image_cache import cache_remote_image
         cache_remote_image(_tmdb_image_url(image_path, "original"))
     if (
@@ -951,6 +951,6 @@ def _tmdb_image_url(path, size):
     if not path:
         return None
     path = str(path)
-    if path.startswith(("http://", "https://")):
+    if path.startswith(("http://", "https://", "etk-cache://")):
         return path
     return f"https://image.tmdb.org/t/p/{size}/{path.lstrip('/')}"
