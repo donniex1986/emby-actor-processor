@@ -35,7 +35,7 @@ SAMPLE_SECONDS = 600
 INTRO_SAMPLE_STEPS = (180, 300, SAMPLE_SECONDS)
 CREDITS_SAMPLE_STEPS = (180, 300)
 INTRO_DETECTION_ALGORITHM_VERSION = 2
-MAX_WORK_EPISODES_PER_SEASON = 8
+MAX_WORK_EPISODES_PER_SEASON = 3
 MAX_WRITE_EPISODES_PER_JOB = 8
 BATCH_CONTINUATION_DELAY_SECONDS = 3
 MIN_INTRO_SECONDS = 18
@@ -1661,6 +1661,7 @@ def _extract_fingerprint(
     )
     values = _run_ffmpeg_chromaprint(direct_url, window_start=window_start, sample_seconds=sample_seconds)
     if values:
+        time.sleep(3)
         return values
     if reused_url and direct_url_cache is not None:
         direct_url_cache.pop(ref.pick_code, None)
@@ -1927,38 +1928,70 @@ def _detect_and_write_credits(
     base_fp, base_start, base_end, starts_by_sha1, matched = detected
     target_start = int(round((base_fp.window_start_seconds + base_start) * INTRO_TICKS))
 
+    # ================== 【新增：偷懒模式核心逻辑】 ==================
+    # 计算模板集中，片尾起点距离视频结尾的平均时长 (Ticks)
+    tail_durations = []
+    for sha1, start_ticks in starts_by_sha1.items():
+        runtime_sec = _cached_runtime_seconds(sha1)
+        if runtime_sec > 0:
+            tail_durations.append((runtime_sec * INTRO_TICKS) - start_ticks)
+
+    avg_tail_duration_ticks = 0
+    if tail_durations:
+        avg_tail_duration_ticks = sum(tail_durations) / len(tail_durations)
+    # ================================================================
+
     updated = 0
     attempted = 0
     for ref in pending_refs:
         attempted += 1
         own_start = starts_by_sha1.get(ref.sha1)
         had_fingerprint = own_start is not None
+
         if own_start is None:
-            try:
-                own_start, had_fingerprint = _match_credits_with_progressive_windows(
-                    ref,
-                    base_fp,
-                    base_start,
-                    base_end,
-                    selected_sample_seconds,
-                    direct_url_cache=direct_url_cache,
-                )
-            except _FingerprintMatchTimeout:
-                _mark_detection_failure(
-                    ref,
-                    FINGERPRINT_KIND_CREDITS,
-                    scope='episode',
-                    reason='credits_episode_match_timeout',
-                    sample_count=len(fps),
-                    episode_count=len(season_refs),
-                )
-                logger.warning(
-                    "  ➜ [片头片尾提取] 《%s》S%02dE%02d 片尾匹配超时，当前算法版本不再自动重试。",
-                    ref.series_title,
-                    ref.season_number,
-                    ref.episode_number,
-                )
-                continue
+            # ================== 【新增：尝试反推片尾】 ==================
+            if avg_tail_duration_ticks > 0:
+                runtime_sec = _cached_runtime_seconds(ref.sha1)
+                if runtime_sec > 0:
+                    # 直接用：总时长 - 平均片尾时长 = 当前集片尾起点
+                    own_start = int((runtime_sec * INTRO_TICKS) - avg_tail_duration_ticks)
+                    had_fingerprint = True
+                    logger.info(
+                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 触发偷懒模式，按平均片尾时长反推起点。",
+                        ref.series_title,
+                        ref.season_number,
+                        ref.episode_number,
+                    )
+            # ============================================================
+
+            # 如果偷懒模式失败（例如获取不到该集的总时长），则回退到原始的下载识别模式
+            if own_start is None:
+                try:
+                    own_start, had_fingerprint = _match_credits_with_progressive_windows(
+                        ref,
+                        base_fp,
+                        base_start,
+                        base_end,
+                        selected_sample_seconds,
+                        direct_url_cache=direct_url_cache,
+                    )
+                except _FingerprintMatchTimeout:
+                    _mark_detection_failure(
+                        ref,
+                        FINGERPRINT_KIND_CREDITS,
+                        scope='episode',
+                        reason='credits_episode_match_timeout',
+                        sample_count=len(fps),
+                        episode_count=len(season_refs),
+                    )
+                    logger.warning(
+                        "  ➜ [片头片尾提取] 《%s》S%02dE%02d 片尾匹配超时，当前算法版本不再自动重试。",
+                        ref.series_title,
+                        ref.season_number,
+                        ref.episode_number,
+                    )
+                    continue
+                    
         if own_start is None:
             if had_fingerprint:
                 _mark_detection_failure(
@@ -1977,9 +2010,11 @@ def _detect_and_write_credits(
                     ref.episode_number,
                 )
             continue
+            
         if _write_credits_for_episode(ref, own_start):
             updated += 1
         time.sleep(0)
+        
     logger.info(
         "  ➜ [片头片尾提取] 《%s》第 %s 季已识别片尾 %.1fs，本轮逐集回写 %s/%s 集（模板 %s/%s 集，窗口 %s 秒，命中 %s 组）。",
         target.series_title,
