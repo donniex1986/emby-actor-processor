@@ -74,6 +74,17 @@
                       </template>
                       编辑媒体信息 (音轨/字幕)
                     </n-button>
+                    <n-button
+                      block
+                      type="warning"
+                      secondary
+                      @click="handleIntroCreditsButtonClick"
+                    >
+                      <template #icon>
+                        <n-icon :component="FlagIcon" />
+                      </template>
+                      编辑片头片尾
+                    </n-button>
                   </n-space>
                 </template>
               </n-card>
@@ -226,14 +237,14 @@
       v-model:show="showEpisodeSelector"
       preset="card"
       style="width: 980px; max-width: 95vw;"
-      title="选择要编辑的集"
+      :title="episodeSelectorTitle"
       :bordered="false"
       size="huge"
     >
       <n-spin :show="isFetchingEpisodes">
         <div v-if="episodesList.length > 0" class="episode-selector-board">
           <div class="episode-selector-summary">
-            共 {{ episodesList.length }} 集，按季列队。鼠标悬停看标题，点击集号开改；编辑框关闭后方阵还在。
+            {{ episodeSelectorSummary }}
           </div>
 
           <section
@@ -525,13 +536,105 @@
         </n-space>
       </template>
     </n-modal>
+
+    <!-- ★★★ 片头片尾编辑模态框 ★★★ -->
+    <n-modal
+      v-model:show="showIntroCreditsEditor"
+      preset="card"
+      style="width: 640px; max-width: 95vw;"
+      title="编辑片头片尾"
+      :bordered="false"
+      size="huge"
+    >
+      <n-spin :show="isLoadingIntroCredits">
+        <n-alert type="info" style="margin-bottom: 16px;">
+          单位为秒。关闭某一项后保存，会同时从 ETK 媒体信息缓存和 Emby 章节中清除对应标记，后续可重新提取。
+        </n-alert>
+
+        <n-descriptions label-placement="left" bordered :column="1" size="small" style="margin-bottom: 16px;">
+          <n-descriptions-item label="SHA1">
+            {{ introCreditsContext.sha1 || '-' }}
+          </n-descriptions-item>
+          <n-descriptions-item label="视频时长" v-if="introCreditsContext.runtime_seconds !== null && introCreditsContext.runtime_seconds !== undefined">
+            {{ formatSeconds(introCreditsContext.runtime_seconds) }}
+          </n-descriptions-item>
+        </n-descriptions>
+
+        <n-card title="片头" size="small" class="chapter-editor-section">
+          <n-space vertical>
+            <n-switch v-model:value="introCreditsForm.intro_enabled">
+              <template #checked>保留片头标记</template>
+              <template #unchecked>清除片头标记</template>
+            </n-switch>
+            <n-grid v-if="introCreditsForm.intro_enabled" cols="1 s:2" :x-gap="12" responsive="screen">
+              <n-grid-item>
+                <n-form-item label="片头开始">
+                  <n-input-number
+                    v-model:value="introCreditsForm.intro_start_seconds"
+                    :min="0"
+                    :step="1"
+                    :precision="3"
+                    style="width: 100%;"
+                  >
+                    <template #suffix>秒</template>
+                  </n-input-number>
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item>
+                <n-form-item label="片头结束">
+                  <n-input-number
+                    v-model:value="introCreditsForm.intro_end_seconds"
+                    :min="0"
+                    :step="1"
+                    :precision="3"
+                    style="width: 100%;"
+                  >
+                    <template #suffix>秒</template>
+                  </n-input-number>
+                </n-form-item>
+              </n-grid-item>
+            </n-grid>
+            <n-text v-if="introCreditsDurationText" depth="3" class="chapter-inline-help">
+              当前片头时长：{{ introCreditsDurationText }}
+            </n-text>
+          </n-space>
+        </n-card>
+
+        <n-card title="片尾" size="small" class="chapter-editor-section">
+          <n-space vertical>
+            <n-switch v-model:value="introCreditsForm.credits_enabled">
+              <template #checked>保留片尾标记</template>
+              <template #unchecked>清除片尾标记</template>
+            </n-switch>
+            <n-form-item v-if="introCreditsForm.credits_enabled" label="片尾开始">
+              <n-input-number
+                v-model:value="introCreditsForm.credits_start_seconds"
+                :min="0"
+                :step="1"
+                :precision="3"
+                style="width: 100%;"
+              >
+                <template #suffix>秒</template>
+              </n-input-number>
+            </n-form-item>
+          </n-space>
+        </n-card>
+      </n-spin>
+
+      <template #action>
+        <n-space justify="end">
+          <n-button @click="showIntroCreditsEditor = false">取消</n-button>
+          <n-button type="primary" @click="saveIntroCredits" :loading="isSavingIntroCredits">保存并刷新</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </n-layout>
 </template>
 
 <script setup>
 import { ref, shallowRef, onMounted, watch, computed, nextTick } from 'vue';
 import draggable from 'vuedraggable';
-import { NIcon, NInput, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage, NModal, NList, NListItem, NThing, NEmpty, NButtonGroup, NDropdown, NTooltip } from 'naive-ui';
+import { NIcon, NInput, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage, NModal, NList, NListItem, NThing, NEmpty, NButtonGroup, NDropdown, NTooltip, NInputNumber, NSwitch, NText } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
 import { NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage } from 'naive-ui';
@@ -546,7 +649,8 @@ import {
   CloudUploadOutline as CloudUploadIcon,
   LinkOutline as LinkIcon,
   SearchOutline as SearchIcon,
-  DocumentTextOutline as DocumentTextIcon
+  DocumentTextOutline as DocumentTextIcon,
+  FlagOutline as FlagIcon
 } from '@vicons/ionicons5';
 import { debounce } from 'lodash-es';
 
@@ -684,6 +788,17 @@ const currentEditMediaId = ref(null); // ★ 新增：记录当前正在编辑�
 const showEpisodeSelector = ref(false);
 const isFetchingEpisodes = ref(false);
 const episodesList = ref([]); 
+const episodeSelectorMode = ref('mediaInfo');
+
+const episodeSelectorTitle = computed(() => (
+  episodeSelectorMode.value === 'introCredits' ? '选择要编辑片头片尾的集' : '选择要编辑的集'
+));
+
+const episodeSelectorSummary = computed(() => (
+  episodeSelectorMode.value === 'introCredits'
+    ? `共 ${episodesList.value.length} 集，按季列队。鼠标悬停看标题，点击集号编辑片头片尾。`
+    : `共 ${episodesList.value.length} 集，按季列队。鼠标悬停看标题，点击集号开改；编辑框关闭后方阵还在。`
+));
 
 // ★★★ 剧集选择：按季分组，做成“阅兵式”方阵 ★★★
 const episodeSeasonGroups = computed(() => {
@@ -731,7 +846,11 @@ const getEpisodeTooltip = (ep) => {
 
 const handleEpisodeChipClick = (ep) => {
   // 不再关闭分集选择框：媒体信息编辑框会盖在上层，关掉后还能继续点下一集。
-  openMediaInfoEditor(ep.emby_id);
+  if (episodeSelectorMode.value === 'introCredits') {
+    openIntroCreditsEditor(ep.emby_id);
+  } else {
+    openMediaInfoEditor(ep.emby_id);
+  }
 };
 
 // ★★★ 拆分音轨和字幕的下拉选项 ★★★
@@ -739,24 +858,147 @@ const audioLanguageOptions = ref([]);
 const subtitleLanguageOptions = ref([]);
 
 
+const openEpisodeSelector = async (mode) => {
+  episodeSelectorMode.value = mode;
+  showEpisodeSelector.value = true;
+  isFetchingEpisodes.value = true;
+  try {
+    const res = await axios.get(`/api/media_info/series/${itemId.value}/episodes`);
+    episodesList.value = res.data;
+  } catch (e) {
+    message.error(e.response?.data?.error || "获取剧集分集列表失败");
+    showEpisodeSelector.value = false;
+  } finally {
+    isFetchingEpisodes.value = false;
+  }
+};
+
 // ★ 新增：点击编辑按钮的分流逻辑
 const handleMediaInfoButtonClick = async () => {
   if (itemDetails.value.item_type === 'Series') {
-    // 如果是剧集，先拉取分集列表并打开选择框
-    showEpisodeSelector.value = true;
-    isFetchingEpisodes.value = true;
-    try {
-      const res = await axios.get(`/api/media_info/series/${itemId.value}/episodes`);
-      episodesList.value = res.data;
-    } catch (e) {
-      message.error(e.response?.data?.error || "获取剧集分集列表失败");
-      showEpisodeSelector.value = false;
-    } finally {
-      isFetchingEpisodes.value = false;
-    }
+    await openEpisodeSelector('mediaInfo');
   } else {
     // 如果是电影，直接打开编辑器
     openMediaInfoEditor(itemId.value);
+  }
+};
+
+const handleIntroCreditsButtonClick = async () => {
+  if (itemDetails.value.item_type === 'Series') {
+    await openEpisodeSelector('introCredits');
+  } else {
+    openIntroCreditsEditor(itemId.value);
+  }
+};
+
+const showIntroCreditsEditor = ref(false);
+const isLoadingIntroCredits = ref(false);
+const isSavingIntroCredits = ref(false);
+const introCreditsContext = ref({
+  sha1: '',
+  runtime_seconds: null
+});
+const introCreditsForm = ref({
+  intro_enabled: false,
+  intro_start_seconds: 0,
+  intro_end_seconds: 90,
+  credits_enabled: false,
+  credits_start_seconds: null
+});
+
+const formatSeconds = (value) => {
+  const total = Number(value);
+  if (!Number.isFinite(total)) return '-';
+  const minutes = Math.floor(total / 60);
+  const seconds = total - minutes * 60;
+  const rawSeconds = seconds.toFixed(3).replace(/\.?0+$/, '');
+  const secondText = minutes > 0 ? rawSeconds.padStart(2, '0') : rawSeconds;
+  return minutes > 0 ? `${minutes}:${secondText}` : `${secondText} 秒`;
+};
+
+const introCreditsDurationText = computed(() => {
+  if (!introCreditsForm.value.intro_enabled) return '';
+  const start = Number(introCreditsForm.value.intro_start_seconds);
+  const end = Number(introCreditsForm.value.intro_end_seconds);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return '';
+  return formatSeconds(end - start);
+});
+
+const applyIntroCreditsPayload = (data) => {
+  introCreditsContext.value = {
+    sha1: data.sha1 || '',
+    runtime_seconds: data.runtime_seconds ?? null
+  };
+  introCreditsForm.value = {
+    intro_enabled: !!data.intro_enabled,
+    intro_start_seconds: data.intro_start_seconds ?? 0,
+    intro_end_seconds: data.intro_end_seconds ?? 90,
+    credits_enabled: !!data.credits_enabled,
+    credits_start_seconds: data.credits_start_seconds ?? null
+  };
+};
+
+const openIntroCreditsEditor = async (targetId) => {
+  currentEditMediaId.value = targetId;
+  showIntroCreditsEditor.value = true;
+  isLoadingIntroCredits.value = true;
+  applyIntroCreditsPayload({});
+  try {
+    const res = await axios.get(`/api/media_info/chapters/${targetId}`);
+    applyIntroCreditsPayload(res.data || {});
+  } catch (e) {
+    message.error(e.response?.data?.error || "获取片头片尾失败");
+    showIntroCreditsEditor.value = false;
+  } finally {
+    isLoadingIntroCredits.value = false;
+  }
+};
+
+const validateIntroCreditsForm = () => {
+  if (introCreditsForm.value.intro_enabled) {
+    const start = Number(introCreditsForm.value.intro_start_seconds);
+    const end = Number(introCreditsForm.value.intro_end_seconds);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      message.error('请填写有效的片头开始和结束秒数');
+      return false;
+    }
+    if (end <= start) {
+      message.error('片头结束必须大于片头开始');
+      return false;
+    }
+  }
+  if (introCreditsForm.value.credits_enabled) {
+    const start = Number(introCreditsForm.value.credits_start_seconds);
+    if (!Number.isFinite(start)) {
+      message.error('请填写有效的片尾开始秒数');
+      return false;
+    }
+  }
+  return true;
+};
+
+const saveIntroCredits = async () => {
+  if (!validateIntroCreditsForm()) return;
+  isSavingIntroCredits.value = true;
+  const loadingMsg = message.loading("正在保存片头片尾并写入 Emby...", { duration: 0 });
+  try {
+    const payload = {
+      sha1: introCreditsContext.value.sha1,
+      intro_enabled: introCreditsForm.value.intro_enabled,
+      intro_start_seconds: introCreditsForm.value.intro_start_seconds,
+      intro_end_seconds: introCreditsForm.value.intro_end_seconds,
+      credits_enabled: introCreditsForm.value.credits_enabled,
+      credits_start_seconds: introCreditsForm.value.credits_start_seconds
+    };
+    const res = await axios.post(`/api/media_info/chapters/${currentEditMediaId.value}`, payload);
+    applyIntroCreditsPayload(res.data || {});
+    message.success(res.data.message || "片头片尾已更新！");
+    showIntroCreditsEditor.value = false;
+  } catch (e) {
+    message.error(e.response?.data?.error || "保存片头片尾失败，请检查后端日志");
+  } finally {
+    loadingMsg.destroy();
+    isSavingIntroCredits.value = false;
   }
 };
 // 1. 获取语言映射表
@@ -1420,6 +1662,18 @@ const handleSaveChanges = async () => {
 }
 .episode-selector-board::-webkit-scrollbar-thumb:hover {
   background: var(--n-text-color-3);
+}
+
+.chapter-editor-section {
+  margin-bottom: 14px;
+}
+
+.chapter-editor-section:last-child {
+  margin-bottom: 0;
+}
+
+.chapter-inline-help {
+  font-size: 13px;
 }
 
 @media (max-width: 640px) {

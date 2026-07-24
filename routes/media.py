@@ -926,73 +926,330 @@ def api_get_tmdb_images(item_id):
 # ======================================================================
 # ★★★ 媒体信息 (MediaInfo) 编辑 API ★★★
 # ======================================================================
+def _json_array_value(value):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return []
+    return value if isinstance(value, list) else []
+
+
+def _resolve_media_info_edit_context(item_id):
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        return None, ("缺少 Emby ItemID", 400)
+
+    from database.connection import get_db_connection
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT title, item_type, parent_series_tmdb_id, season_number, episode_number,
+                       emby_item_ids_json, asset_details_json, file_sha1_json
+                FROM media_metadata
+                WHERE emby_item_ids_json @> %s::jsonb
+                LIMIT 1
+            """, (json.dumps([item_id]),))
+            row = cursor.fetchone()
+
+    if not row:
+        return None, ("数据库中未找到该媒体项", 404)
+
+    asset_details = _json_array_value(row.get("asset_details_json"))
+    file_sha1_list = _json_array_value(row.get("file_sha1_json"))
+    emby_item_ids = [str(x or "").strip() for x in _json_array_value(row.get("emby_item_ids_json"))]
+
+    target_index = -1
+    for index, asset in enumerate(asset_details):
+        if isinstance(asset, dict) and str(asset.get("emby_item_id") or "").strip() == item_id:
+            target_index = index
+            break
+    if target_index < 0 and item_id in emby_item_ids:
+        target_index = emby_item_ids.index(item_id)
+    if target_index < 0 and len(file_sha1_list) == 1:
+        target_index = 0
+
+    sha1 = None
+    if 0 <= target_index < len(file_sha1_list):
+        sha1 = str(file_sha1_list[target_index] or "").strip().upper()
+    if not sha1 and len(file_sha1_list) == 1:
+        sha1 = str(file_sha1_list[0] or "").strip().upper()
+    if not sha1:
+        return None, ("未找到该媒体项对应的 SHA1", 404)
+
+    mediainfo_json = media_db.get_mediainfo_by_sha1(sha1)
+    if not mediainfo_json:
+        return None, ("未找到该媒体的格式化媒体信息缓存", 404)
+
+    return {
+        "item_id": item_id,
+        "sha1": sha1,
+        "mediainfo": mediainfo_json,
+        "title": row.get("title"),
+        "item_type": row.get("item_type"),
+        "parent_series_tmdb_id": row.get("parent_series_tmdb_id"),
+        "season_number": row.get("season_number"),
+        "episode_number": row.get("episode_number"),
+    }, None
+
+
+def _mediainfo_root(mediainfo):
+    if isinstance(mediainfo, list) and mediainfo and isinstance(mediainfo[0], dict):
+        return mediainfo[0]
+    return mediainfo if isinstance(mediainfo, dict) else None
+
+
+def _ticks_to_seconds(ticks):
+    try:
+        ticks = int(float(ticks))
+        return round(ticks / 10_000_000, 3) if ticks >= 0 else None
+    except Exception:
+        return None
+
+
+def _seconds_to_ticks(value, label):
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} 必须填写有效秒数")
+    if seconds < 0:
+        raise ValueError(f"{label} 不能小于 0")
+    return int(round(seconds * 10_000_000))
+
+
+def _extract_marker_seconds(mediainfo):
+    root = _mediainfo_root(mediainfo)
+    chapters = root.get("Chapters") if isinstance(root, dict) else []
+    if not isinstance(chapters, list):
+        chapters = []
+    values = {
+        "intro_start_seconds": None,
+        "intro_end_seconds": None,
+        "credits_start_seconds": None,
+    }
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+        marker = str(chapter.get("MarkerType") or "").strip()
+        seconds = _ticks_to_seconds(chapter.get("StartPositionTicks"))
+        if seconds is None:
+            continue
+        if marker == "IntroStart":
+            values["intro_start_seconds"] = seconds
+        elif marker == "IntroEnd":
+            values["intro_end_seconds"] = seconds
+        elif marker == "CreditsStart":
+            values["credits_start_seconds"] = seconds
+
+    runtime_ticks = None
+    source = root.get("MediaSourceInfo") if isinstance(root, dict) and isinstance(root.get("MediaSourceInfo"), dict) else root
+    if isinstance(source, dict):
+        runtime_ticks = source.get("RunTimeTicks") or (root or {}).get("RunTimeTicks")
+    values["runtime_seconds"] = _ticks_to_seconds(runtime_ticks)
+    values["intro_enabled"] = values["intro_start_seconds"] is not None and values["intro_end_seconds"] is not None
+    values["credits_enabled"] = values["credits_start_seconds"] is not None
+    return values
+
+
+def _merge_marker_chapters(mediainfo, intro_enabled, intro_start_ticks, intro_end_ticks, credits_enabled, credits_start_ticks):
+    root = _mediainfo_root(mediainfo)
+    if root is None:
+        raise ValueError("媒体信息格式无效")
+    existing = root.get("Chapters")
+    if not isinstance(existing, list):
+        existing = []
+    marker_types = {"IntroStart", "IntroEnd", "CreditsStart"}
+    kept = [
+        item for item in existing
+        if not (isinstance(item, dict) and str(item.get("MarkerType") or "") in marker_types)
+    ]
+    additions = []
+    if intro_enabled:
+        additions.extend([
+            {
+                "StartPositionTicks": int(intro_start_ticks),
+                "Name": "片头",
+                "MarkerType": "IntroStart",
+                "ChapterIndex": len(kept),
+            },
+            {
+                "StartPositionTicks": int(intro_end_ticks),
+                "Name": "片头结束",
+                "MarkerType": "IntroEnd",
+                "ChapterIndex": len(kept) + 1,
+            },
+        ])
+    if credits_enabled:
+        additions.append({
+            "StartPositionTicks": int(credits_start_ticks),
+            "Name": "片尾",
+            "MarkerType": "CreditsStart",
+            "ChapterIndex": len(kept) + len(additions),
+        })
+    root["Chapters"] = kept + additions
+    return mediainfo
+
+
+def _reset_intro_detection_failures(context, reset_intro, reset_credits):
+    kinds = []
+    if reset_intro:
+        kinds.append("intro")
+    if reset_credits:
+        kinds.append("credits")
+    if not kinds:
+        return 0
+    keys = [f"episode:{context.get('sha1')}"]
+    series_tmdb_id = str(context.get("parent_series_tmdb_id") or "").strip()
+    try:
+        season_number = int(context.get("season_number") or 0)
+    except (TypeError, ValueError):
+        season_number = 0
+    if series_tmdb_id:
+        keys.append(f"season:{series_tmdb_id}:{season_number}")
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM p115_intro_detection_failures
+                    WHERE failure_key = ANY(%s)
+                      AND kind = ANY(%s)
+                    """,
+                    (keys, kinds),
+                )
+                deleted = cursor.rowcount
+            conn.commit()
+        return deleted
+    except Exception as exc:
+        logger.debug("清理片头片尾失败标记失败: %s", exc, exc_info=True)
+        return 0
+
+
 @media_api_bp.route('/media_info/edit/<item_id>', methods=['GET'])
 @processor_ready_required
 def api_get_media_info_for_edit(item_id):
     """获取指定媒体的底层 MediaInfo JSON 数据（直接从数据库查）"""
     try:
-        item_id = str(item_id)
-
-        # 1. 直接从 media_metadata 查 asset_details_json + file_sha1_json
-        from database.connection import get_db_connection
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT asset_details_json, file_sha1_json
-                    FROM media_metadata
-                    WHERE emby_item_ids_json @> %s::jsonb
-                    LIMIT 1
-                """, (json.dumps([item_id]),))
-                row = cursor.fetchone()
-
-        if not row:
-            return jsonify({"error": "数据库中未找到该媒体项"}), 404
-
-        asset_details = row.get("asset_details_json") or []
-        file_sha1_list = row.get("file_sha1_json") or []
-
-        # 2. 从 asset_details_json 中找到当前 emby_item_id 对应的媒体项
-        target_asset = None
-        target_index = -1
-
-        for i, asset in enumerate(asset_details):
-            if str(asset.get("emby_item_id", "")) == item_id:
-                target_asset = asset
-                target_index = i
-                break
-
-        if not target_asset:
-            return jsonify({"error": "asset_details_json 中未找到对应的媒体项路径"}), 404
-
-        media_path = target_asset.get("path")
-        if not media_path:
-            return jsonify({"error": "目标媒体项缺少路径信息"}), 404
-
-        # 3. 按同索引取 sha1
-        sha1 = None
-        if 0 <= target_index < len(file_sha1_list):
-            sha1 = file_sha1_list[target_index]
-
-        # 如果只有一个 sha1，也允许兜底拿它
-        if not sha1 and len(file_sha1_list) == 1:
-            sha1 = file_sha1_list[0]
-
-        # 4. 从数据库 mediainfo 指纹库获取
-        mediainfo_json = None
-        if sha1:
-            mediainfo_json = media_db.get_mediainfo_by_sha1(sha1)
-
-        if not mediainfo_json:
-            return jsonify({"error": "未找到该媒体的格式化媒体信息缓存"}), 404
+        context, error = _resolve_media_info_edit_context(item_id)
+        if error:
+            message, status = error
+            return jsonify({"error": message}), status
 
         return jsonify({
-            "sha1": sha1,
-            "mediainfo": mediainfo_json
+            "sha1": context["sha1"],
+            "mediainfo": context["mediainfo"]
         })
 
     except Exception as e:
         logger.error(f"获取媒体信息失败: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误"}), 500
+
+
+@media_api_bp.route('/media_info/chapters/<item_id>', methods=['GET'])
+@processor_ready_required
+def api_get_intro_credit_chapters(item_id):
+    """读取当前媒体项的片头/片尾章节。"""
+    try:
+        context, error = _resolve_media_info_edit_context(item_id)
+        if error:
+            message, status = error
+            return jsonify({"error": message}), status
+        return jsonify({
+            "sha1": context["sha1"],
+            **_extract_marker_seconds(context["mediainfo"]),
+        })
+    except Exception as e:
+        logger.error(f"读取片头片尾失败: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+
+
+@media_api_bp.route('/media_info/chapters/<item_id>', methods=['POST'])
+@admin_required
+@processor_ready_required
+def api_save_intro_credit_chapters(item_id):
+    """保存片头/片尾章节到本地缓存，并通过桥接插件写入 Emby。"""
+    data = request.json or {}
+    try:
+        context, error = _resolve_media_info_edit_context(item_id)
+        if error:
+            message, status = error
+            return jsonify({"error": message}), status
+        if str(data.get("sha1") or "").strip().upper() != context["sha1"]:
+            return jsonify({"error": "当前媒体信息已变化，请重新打开后再保存"}), 409
+
+        intro_enabled = bool(data.get("intro_enabled"))
+        credits_enabled = bool(data.get("credits_enabled"))
+        intro_start_ticks = intro_end_ticks = credits_start_ticks = None
+
+        if intro_enabled:
+            intro_start_ticks = _seconds_to_ticks(data.get("intro_start_seconds"), "片头开始")
+            intro_end_ticks = _seconds_to_ticks(data.get("intro_end_seconds"), "片头结束")
+            if intro_end_ticks <= intro_start_ticks:
+                return jsonify({"error": "片头结束必须大于片头开始"}), 400
+        if credits_enabled:
+            credits_start_ticks = _seconds_to_ticks(data.get("credits_start_seconds"), "片尾开始")
+        current_markers = _extract_marker_seconds(context["mediainfo"])
+        runtime_seconds = current_markers.get("runtime_seconds")
+        if runtime_seconds is not None and runtime_seconds > 0:
+            runtime_ticks = _seconds_to_ticks(runtime_seconds, "视频时长")
+            if intro_enabled and intro_end_ticks >= runtime_ticks:
+                return jsonify({"error": "片头结束不能超过视频时长"}), 400
+            if credits_enabled and credits_start_ticks >= runtime_ticks:
+                return jsonify({"error": "片尾开始不能超过视频时长"}), 400
+
+        mediainfo_json = _merge_marker_chapters(
+            context["mediainfo"],
+            intro_enabled,
+            intro_start_ticks,
+            intro_end_ticks,
+            credits_enabled,
+            credits_start_ticks,
+        )
+
+        from database import connection
+        from psycopg2.extras import Json
+        with connection.get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE p115_mediainfo_cache SET mediainfo_json = %s WHERE sha1 = %s",
+                    (Json(mediainfo_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)), context["sha1"]),
+                )
+                if cursor.rowcount != 1:
+                    return jsonify({"error": "媒体信息缓存不存在"}), 404
+            conn.commit()
+
+        processor = extensions.media_processor_instance
+        result = emby.update_etk_chapters(
+            str(item_id),
+            processor.emby_url,
+            processor.emby_api_key,
+            intro_start_ticks=intro_start_ticks,
+            intro_end_ticks=intro_end_ticks,
+            credits_start_ticks=credits_start_ticks,
+            clear_intro=not intro_enabled,
+            clear_credits=not credits_enabled,
+        )
+        if result is None:
+            return jsonify({"error": "缓存已保存，但写入 Emby 失败，请确认桥接插件已更新"}), 502
+
+        reset_count = _reset_intro_detection_failures(
+            context,
+            reset_intro=not intro_enabled,
+            reset_credits=not credits_enabled,
+        )
+        return jsonify({
+            "message": "片头片尾已更新并写入 Emby",
+            "sha1": context["sha1"],
+            "result": result,
+            "failure_reset_count": reset_count,
+            **_extract_marker_seconds(mediainfo_json),
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"保存片头片尾失败: {e}", exc_info=True)
+        return jsonify({"error": f"保存失败: {str(e)}"}), 500
 
 @media_api_bp.route('/media_info/edit/<item_id>', methods=['POST'])
 @admin_required
