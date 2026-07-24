@@ -294,6 +294,15 @@ class WatchlistProcessor:
                           AND season.watching_status IN (
                               '{STATUS_WATCHING}', '{STATUS_PAUSED}', '{STATUS_PENDING}'
                           )
+                          AND EXISTS (
+                              SELECT 1
+                              FROM media_metadata AS episode
+                              WHERE episode.parent_series_tmdb_id = media_metadata.tmdb_id
+                                AND episode.item_type = 'Episode'
+                                AND episode.season_number = season.season_number
+                                AND episode.in_library = TRUE
+                                AND episode.episode_number IS NOT NULL
+                          )
                     )
                 """
 

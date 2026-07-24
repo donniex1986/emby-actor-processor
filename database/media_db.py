@@ -336,9 +336,7 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
     - 订阅粒度严格限制为 Movie 和 Season，彻底抛弃 Series 和 Episode 的独立处理。
     - 电影 (Movie)：依赖 subscription_status IN ('WANTED', 'SUBSCRIBED')。
       WANTED 是新订阅入口；SUBSCRIBED 只用于共享池/云资源补库，不能交由 MP。
-    - 剧集季 (Season)：双擎驱动。
-      1. 破冰期：依赖 subscription_status IN ('WANTED', 'SUBSCRIBED') 获取首集。
-      2. 追更期：依赖 watching_status IN ('Watching', 'Paused') 持续补缺。
+    - 剧集季 (Season)：只依赖 subscription_status IN ('WANTED', 'SUBSCRIBED')。
       非 WANTED 状态只进入补库链路，MP 订阅侧会再次硬拦截。
     """
     sql = """
@@ -366,11 +364,8 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
                 -- 电影：按订阅状态获取
                 (item_type = 'Movie' AND subscription_status IN ('WANTED', 'SUBSCRIBED'))
                 OR
-                -- 剧集季：订阅状态 (破冰) OR 追剧状态 (接力追更)
-                (item_type = 'Season' AND (
-                    subscription_status IN ('WANTED', 'SUBSCRIBED') 
-                    OR watching_status IN ('Watching', 'Paused')
-                ))
+                -- 剧集季：只按显式订阅状态获取
+                (item_type = 'Season' AND subscription_status IN ('WANTED', 'SUBSCRIBED'))
         )
         SELECT
             t.tmdb_id,
@@ -421,10 +416,10 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
             -- 季：只要有缺集，或者整季未入库，就要处理
             (t.item_type = 'Season' AND (COUNT(e.episode_number) > 0 OR COALESCE(t.in_library, FALSE) = FALSE))
         ORDER BY
-            -- 4. 优先级排序：新请求(WANTED) 和 正在热播追更(Watching) 优先处理
+            -- 4. 优先级排序：新请求(WANTED) 和 显式补库(SUBSCRIBED) 优先处理
             CASE
                 WHEN t.subscription_status = 'WANTED' THEN 0
-                WHEN t.item_type = 'Season' AND t.watching_status = 'Watching' THEN 0
+                WHEN t.item_type = 'Season' AND t.subscription_status = 'SUBSCRIBED' THEN 0
                 ELSE 1
             END,
             COALESCE(t.first_requested_at, t.last_subscribed_at, NOW()) ASC;

@@ -149,11 +149,16 @@ class SubscribeAssistantManager:
             return
 
         all_tmdb_episodes = all_tmdb_episodes or []
+        local_progress_seasons = self._local_progress_seasons(tmdb_id)
+        if not local_progress_seasons:
+            logger.debug("  ➜ [订阅助手] 《%s》没有任何在库分集，跳过 MP 同步。", series_name or tmdb_id)
+            return
         valid_seasons = [
             s for s in (series_details.get("seasons") or [])
-            if _safe_int(s.get("season_number")) > 0
+            if _safe_int(s.get("season_number")) in local_progress_seasons
         ]
         if not valid_seasons:
+            logger.debug("  ➜ [订阅助手] 《%s》没有本地已有进度的季，跳过 MP 同步。", series_name or tmdb_id)
             return
         latest_season = max(valid_seasons, key=lambda s: _safe_int(s.get("season_number")))
         latest_season_num = _safe_int(latest_season.get("season_number"))
@@ -2122,6 +2127,33 @@ class SubscribeAssistantManager:
             )
             self._set_season_active_washing(tmdb_id, season, True, "全集洗版订阅已创建。")
         return sub
+
+    def _local_progress_seasons(self, tmdb_id: str) -> set:
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT season_number
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND item_type = 'Episode'
+                          AND in_library = TRUE
+                          AND season_number > 0
+                          AND episode_number IS NOT NULL
+                        GROUP BY season_number
+                        """,
+                        (str(tmdb_id),),
+                    )
+                    rows = cursor.fetchall() or []
+            return {
+                _safe_int(row.get("season_number"))
+                for row in rows
+                if _safe_int(row.get("season_number")) > 0
+            }
+        except Exception as e:
+            logger.debug("  ➜ [订阅助手] 查询本地追剧进度失败：tmdb=%s, err=%s", tmdb_id, e)
+            return set()
 
     def _subscription_wash_kwargs(self, decision: Dict[str, Any]) -> Dict[str, Optional[int]]:
         if decision.get("completed_full_washing"):

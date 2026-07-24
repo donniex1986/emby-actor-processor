@@ -1396,9 +1396,9 @@ def list_unregistered_airing_episode_candidates(limit: int = 500) -> List[Dict[s
 
     只做本地数据库比对，不访问 115，不触发一致性校验：
     - 候选来自 media_metadata.Episode 且 in_library=true；
-    - 只信同一父剧同一季的 Season 行 watching_status；
-    - 只有 Season.watching_status IN ('Watching', 'Paused') 才视为追更季；
-    - 不再参考 Series.watching_status / Episode.watching_status，
+    - 只信同一父剧同一季的 Season 行 subscription_status / washing_level；
+    - 只有 Season 有显式订阅状态，或 Season/Episode 有洗版等级，才视为需要入池广播；
+    - 不再参考 Series.watching_status / Season.watching_status / Episode.watching_status，
       避免某一季连载时把同剧已完结旧季重新拉出来“鞭尸”；
     - 排除已经有效登记到中心的 episode 源。
     """
@@ -1434,7 +1434,11 @@ def list_unregistered_airing_episode_candidates(limit: int = 500) -> List[Dict[s
                   AND NULLIF(e.parent_series_tmdb_id, '') IS NOT NULL
                   AND e.season_number IS NOT NULL
                   AND e.episode_number IS NOT NULL
-                  AND LOWER(COALESCE(se.watching_status, '')) IN ('watching', 'paused')
+                  AND (
+                    UPPER(COALESCE(se.subscription_status, '')) NOT IN ('', 'NONE', 'IGNORED')
+                    OR COALESCE(se.washing_level, 0) > 1
+                    OR COALESCE(e.washing_level, 0) > 1
+                  )
                 ORDER BY COALESCE(e.date_added, e.last_updated_at, e.created_at) DESC NULLS LAST,
                          e.parent_series_tmdb_id ASC, e.season_number ASC, e.episode_number ASC
                 LIMIT %s
