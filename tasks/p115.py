@@ -182,7 +182,10 @@ def task_play_pool_daily_speedtest(processor=None):
     return p115_play_pool.run_daily_speedtest_and_rewards(
         update_status=task_manager.update_status_from_thread,
     )
-SEASON_DIR_RE = re.compile(r'^(Season\s?\d+|S\d+|第[一二三四五六七八九十\d]+季)$', re.IGNORECASE)
+SEASON_DIR_RE = re.compile(
+    r'^(?:Season\s*\d{1,4}|S\d{1,4}|第\s*[一二三四五六七八九十\d]+\s*季)(?=$|[ \.\-_\[\(（【])',
+    re.IGNORECASE,
+)
 SEASON_NUM_RE = re.compile(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?')
 SEASON_TEXT_RE = re.compile(r'Season\s*(\d{1,4})\b', re.IGNORECASE)
 SEASON_ZH_RE = re.compile(r'第(\d{1,4})季')

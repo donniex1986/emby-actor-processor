@@ -1163,6 +1163,36 @@ class P115RecognitionRuleTests(unittest.TestCase):
         self.assertNotIn("season_number", hints)
         self.assertNotIn("episode_number", hints)
 
+    def test_season_dir_with_trailing_hint_is_not_nested_big_package_context(self):
+        top_name = "不眠日 (2025) {tmdb=279322}"
+        rel_dir = "Season 01 IQ"
+        gathered_files = [
+            {
+                "fid": "v1",
+                "file_id": "v1",
+                "fn": "不眠日.S01E01.2025.2160p.WEB-DL.IQ.H265.DDP5.1.mkv",
+                "fs": str(2 * 1024 * 1024 * 1024),
+                "_etk_rel_dir": rel_dir,
+            },
+            {
+                "fid": "v2",
+                "file_id": "v2",
+                "fn": "不眠日.S01E02.2025.2160p.WEB-DL.IQ.H265.DDP5.1.mkv",
+                "fs": str(2 * 1024 * 1024 * 1024),
+                "_etk_rel_dir": rel_dir,
+            },
+        ]
+
+        self.assertTrue(task_p115._name_is_season_dir("Season 01 IQ"))
+        self.assertTrue(task_p115._name_is_season_dir("S01 IQ"))
+        self.assertFalse(task_p115._name_is_season_dir("S01E01"))
+        self.assertFalse(task_p115._name_is_season_dir("Season 01E01"))
+        self.assertEqual(task_p115._choose_big_package_context_name(top_name, rel_dir), top_name)
+
+        structure = task_p115._analyze_nested_root_structure(top_name, gathered_files)
+        self.assertEqual(structure["nested_contexts"], [])
+        self.assertFalse(structure["should_force_filewise"])
+
     def test_filewise_big_package_prefers_top_level_explicit_tmdbid_over_file_search(self):
         gathered_files = [
             {
