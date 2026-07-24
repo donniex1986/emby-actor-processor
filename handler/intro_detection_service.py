@@ -3,8 +3,8 @@
 This is intentionally small and opt-in:
 - callers enqueue freshly-bound Episode items;
 - the service itself checks the shared-resource switch and active watchlist;
-- one daemon worker progressively samples the first 3/5/10 minutes for intros
-  and the last 1/2/3 minutes for credits;
+- one daemon worker progressively samples full windows (3/5/10 minutes for
+  intros and 1/2/3 minutes for credits); failed episodes alone move forward;
 - chromaprint raw fingerprints are cached by SHA1;
 - once a stable same-season intro is found, chapters are written back to ETK
   media-info cache, Emby, and the shared-intro uploader.
@@ -35,13 +35,17 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_SECONDS = 600
 INTRO_SAMPLE_STEPS = (180, 300, SAMPLE_SECONDS)
-CREDITS_SAMPLE_STEPS = (60, 120, 180)
+CREDITS_SAMPLE_STEPS = (180, 300)
+INTRO_DETECTION_ALGORITHM_VERSION = 1
 MAX_WORK_EPISODES_PER_SEASON = 8
+MAX_WRITE_EPISODES_PER_JOB = 8
 MIN_INTRO_SECONDS = 18
 MAX_INTRO_SECONDS = 240
 MAX_INTRO_START_SECONDS = 360
 MIN_CREDITS_SECONDS = 18
-MAX_CREDITS_SECONDS = 180
+MAX_CREDITS_SECONDS = 300
+CREDITS_BOUNDARY_MARGIN_SECONDS = 8
+CPU_YIELD_INTERVAL = 32
 INTRO_TICKS = 10_000_000
 QUEUE_MAXSIZE = 512
 RECENT_TTL_SECONDS = 6 * 3600
@@ -73,10 +77,9 @@ INTRO_JOB_TRIGGER_PLAYBACK = "playback"
 INTRO_JOB_TRIGGER_BACKFILL = "backfill"
 FINGERPRINT_KIND_INTRO = "intro"
 FINGERPRINT_KIND_CREDITS = "credits"
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+# Keep this aligned with ffprobe and video screenshot extraction so the
+# process-wide 115 direct-link cache can be shared by PickCode.
+UA = "Mozilla/5.0"
 
 _queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=QUEUE_MAXSIZE)
 _worker_lock = threading.Lock()
@@ -764,7 +767,7 @@ def _process_job(job: Dict[str, Any]) -> None:
             target.season_number,
         )
         return
-    chapter_refs = [ref for ref in season_refs if not _is_confirmed_clean_version(ref)]
+    chapter_refs = season_refs
     _restore_cached_chapters_to_emby(chapter_refs)
     intro_needed = any(not _cache_has_intro(ref.sha1) for ref in chapter_refs)
     credits_needed = _credits_detection_enabled() and any(
@@ -799,7 +802,7 @@ def _detect_and_write_intro(
     selected_sample_seconds = 0
     for sample_seconds in INTRO_SAMPLE_STEPS:
         fps = []
-        for ref in season_refs[:MAX_WORK_EPISODES_PER_SEASON]:
+        for ref in season_refs:
             fp = _load_or_extract_fingerprint(
                 ref,
                 requested_sample_seconds=sample_seconds,
@@ -832,19 +835,13 @@ def _detect_and_write_intro(
         attempted += 1
         own_range = ranges_by_sha1.get(ref.sha1)
         if not own_range:
-            fp = _load_or_extract_fingerprint(
+            own_range = _match_intro_with_progressive_windows(
                 ref,
-                requested_sample_seconds=selected_sample_seconds,
-                direct_url_cache=direct_url_cache,
-            )
-            if not fp or len(fp.values) < 40:
-                continue
-            own_range = _match_intro_against_template(
                 base_fp,
-                fp,
                 base_start,
                 base_end,
-                max_start_seconds=min(MAX_INTRO_START_SECONDS, selected_sample_seconds),
+                selected_sample_seconds,
+                direct_url_cache=direct_url_cache,
             )
         if not own_range:
             continue
@@ -985,8 +982,6 @@ def _season_has_intro_detection_cache(target: EpisodeRef) -> bool:
 
 def _needs_intro_backfill(ref: EpisodeRef, include_credits: bool) -> bool:
     if not ref.sha1 or not ref.pick_code:
-        return False
-    if _is_confirmed_clean_version(ref):
         return False
     return (not _cache_has_intro(ref.sha1)) or (include_credits and not _cache_has_credits(ref.sha1))
 
@@ -1206,36 +1201,6 @@ def _load_or_extract_fingerprint(
             if cached_coverage != cached_sample_seconds:
                 _save_fingerprint_cache(ref.sha1, cached_values, cached_coverage, kind=kind)
             return FingerprintRef(ref, values, sample_seconds, window_start, kind)
-
-        extension_start = float(cached_coverage)
-        extension_seconds = sample_seconds - cached_coverage
-        prepend = False
-        if kind == FINGERPRINT_KIND_CREDITS:
-            cached_window_start, _ = _fingerprint_window(ref, kind, cached_coverage)
-            extension_start = window_start
-            extension_seconds = max(1, int(round(cached_window_start - window_start)))
-            prepend = True
-        logger.info(
-            "  ➜ [片头声纹提取] 增量扩展%s指纹：%s S%02dE%02d（%s 秒 -> %s 秒）",
-            "片尾" if kind == FINGERPRINT_KIND_CREDITS else "片头",
-            ref.series_title,
-            ref.season_number,
-            ref.episode_number,
-            cached_coverage,
-            sample_seconds,
-        )
-        extension = _extract_fingerprint(
-            ref,
-            window_start=extension_start,
-            sample_seconds=extension_seconds,
-            kind=kind,
-            direct_url_cache=direct_url_cache,
-        )
-        if not extension:
-            return None
-        values = extension + cached_values if prepend else cached_values + extension
-        _save_fingerprint_cache(ref.sha1, values, sample_seconds, kind=kind)
-        return FingerprintRef(ref, values, sample_seconds, window_start, kind)
 
     values = _extract_fingerprint(
         ref,
@@ -1515,7 +1480,24 @@ def _detect_common_intro(
     *,
     max_start_seconds: float = MAX_INTRO_START_SECONDS,
 ) -> Optional[Tuple[FingerprintRef, float, float, Dict[str, Tuple[int, int]], int]]:
+    if not fps:
+        return None
+    # One stable, longest fingerprint is enough as the season template. Trying
+    # every episode as a base turns matching into an O(n^2) CPU-bound scan.
     base = max(fps, key=lambda fp: len(fp.values))
+    return _detect_common_intro_for_base(
+        base,
+        fps,
+        max_start_seconds=max_start_seconds,
+    )
+
+
+def _detect_common_intro_for_base(
+    base: FingerprintRef,
+    fps: List[FingerprintRef],
+    *,
+    max_start_seconds: float,
+) -> Optional[Tuple[FingerprintRef, float, float, Dict[str, Tuple[int, int]], int]]:
     segments: List[Tuple[FingerprintRef, float, float, float, float]] = []
     for fp in fps:
         if fp is base:
@@ -1572,7 +1554,7 @@ def _detect_and_write_credits(
     selected_sample_seconds = 0
     for sample_seconds in CREDITS_SAMPLE_STEPS:
         fps = []
-        for ref in season_refs[:MAX_WORK_EPISODES_PER_SEASON]:
+        for ref in season_refs:
             fp = _load_or_extract_fingerprint(
                 ref,
                 kind=FINGERPRINT_KIND_CREDITS,
@@ -1583,10 +1565,27 @@ def _detect_and_write_credits(
                 fps.append(fp)
         if len(fps) < 2:
             continue
-        detected = _detect_common_credits(fps, max_start_seconds=sample_seconds)
-        if detected:
+        candidate = _detect_common_credits(fps, max_start_seconds=sample_seconds)
+        if candidate:
+            detected = candidate
             selected_sample_seconds = sample_seconds
-            break
+            if not _credits_detection_touches_window_start(candidate, fps):
+                break
+            if sample_seconds >= CREDITS_SAMPLE_STEPS[-1]:
+                detected = None
+                logger.info(
+                    "  ➜ [片头声纹提取] 《%s》第 %s 季片尾起点超出最大 %s 秒窗口，已放弃写入不准确的片尾章节。",
+                    target.series_title,
+                    target.season_number,
+                    sample_seconds,
+                )
+                break
+            logger.info(
+                "  ➜ [片头声纹提取] 《%s》第 %s 季片尾边界仍贴近 %s 秒窗口起点，继续向前扩展。",
+                target.series_title,
+                target.season_number,
+                sample_seconds,
+            )
     if len(fps) < 2:
         logger.info("  ➜ [片头声纹提取] 《%s》第 %s 季有效片尾指纹不足，暂不写入。", target.series_title, target.season_number)
         return
@@ -1604,20 +1603,13 @@ def _detect_and_write_credits(
         attempted += 1
         own_start = starts_by_sha1.get(ref.sha1)
         if own_start is None:
-            fp = _load_or_extract_fingerprint(
+            own_start = _match_credits_with_progressive_windows(
                 ref,
-                kind=FINGERPRINT_KIND_CREDITS,
-                requested_sample_seconds=selected_sample_seconds,
-                direct_url_cache=direct_url_cache,
-            )
-            if not fp or len(fp.values) < 40:
-                continue
-            own_start = _match_credits_against_template(
                 base_fp,
-                fp,
                 base_start,
                 base_end,
-                max_start_seconds=selected_sample_seconds,
+                selected_sample_seconds,
+                direct_url_cache=direct_url_cache,
             )
         if own_start is None:
             continue
@@ -1641,7 +1633,22 @@ def _detect_common_credits(
     *,
     max_start_seconds: float,
 ) -> Optional[Tuple[FingerprintRef, float, float, Dict[str, int], int]]:
+    if not fps:
+        return None
     base = max(fps, key=lambda fp: len(fp.values))
+    return _detect_common_credits_for_base(
+        base,
+        fps,
+        max_start_seconds=max_start_seconds,
+    )
+
+
+def _detect_common_credits_for_base(
+    base: FingerprintRef,
+    fps: List[FingerprintRef],
+    *,
+    max_start_seconds: float,
+) -> Optional[Tuple[FingerprintRef, float, float, Dict[str, int], int]]:
     segments: List[Tuple[FingerprintRef, float, float, float, float]] = []
     for fp in fps:
         if fp is base:
@@ -1680,6 +1687,24 @@ def _detect_common_credits(
     return (base, base_start_median, base_end_median, normalized, len(consensus)) if normalized else None
 
 
+def _credits_detection_touches_window_start(
+    detected: Tuple[FingerprintRef, float, float, Dict[str, int], int],
+    fps: Sequence[FingerprintRef],
+) -> bool:
+    starts_by_sha1 = detected[3]
+    matched = 0
+    touching = 0
+    for fp in fps:
+        start_ticks = starts_by_sha1.get(fp.episode.sha1)
+        if start_ticks is None:
+            continue
+        matched += 1
+        relative_start = start_ticks / INTRO_TICKS - fp.window_start_seconds
+        if relative_start <= CREDITS_BOUNDARY_MARGIN_SECONDS:
+            touching += 1
+    return matched > 0 and touching * 2 >= matched
+
+
 def _normalize_intro_range(start_seconds: float, end_seconds: float) -> Optional[Tuple[int, int]]:
     start_seconds = float(start_seconds)
     end_seconds = float(end_seconds)
@@ -1716,6 +1741,37 @@ def _match_intro_against_template(
     return _normalize_intro_range(*matched_range)
 
 
+def _match_intro_with_progressive_windows(
+    ref: EpisodeRef,
+    base: FingerprintRef,
+    base_start_template: float,
+    base_end_template: float,
+    initial_sample_seconds: int,
+    *,
+    direct_url_cache: Optional[Dict[str, Tuple[str, str]]] = None,
+) -> Optional[Tuple[int, int]]:
+    for sample_seconds in INTRO_SAMPLE_STEPS:
+        if sample_seconds < initial_sample_seconds:
+            continue
+        fp = _load_or_extract_fingerprint(
+            ref,
+            requested_sample_seconds=sample_seconds,
+            direct_url_cache=direct_url_cache,
+        )
+        if not fp or len(fp.values) < 40:
+            continue
+        own_range = _match_intro_against_template(
+            base,
+            fp,
+            base_start_template,
+            base_end_template,
+            max_start_seconds=min(MAX_INTRO_START_SECONDS, sample_seconds),
+        )
+        if own_range:
+            return own_range
+    return None
+
+
 def _normalize_credits_start_by_sha1(sha1: str, start_seconds: float) -> Optional[int]:
     start_seconds = float(start_seconds)
     runtime_seconds = _cached_runtime_seconds(sha1)
@@ -1749,6 +1805,42 @@ def _match_credits_against_template(
     if duration < MIN_CREDITS_SECONDS or duration > MAX_CREDITS_SECONDS:
         return None
     return _normalize_credits_start_by_sha1(other.episode.sha1, other.window_start_seconds + own_start)
+
+
+def _match_credits_with_progressive_windows(
+    ref: EpisodeRef,
+    base: FingerprintRef,
+    base_start_template: float,
+    base_end_template: float,
+    initial_sample_seconds: int,
+    *,
+    direct_url_cache: Optional[Dict[str, Tuple[str, str]]] = None,
+) -> Optional[int]:
+    for sample_seconds in CREDITS_SAMPLE_STEPS:
+        if sample_seconds < initial_sample_seconds:
+            continue
+        fp = _load_or_extract_fingerprint(
+            ref,
+            kind=FINGERPRINT_KIND_CREDITS,
+            requested_sample_seconds=sample_seconds,
+            direct_url_cache=direct_url_cache,
+        )
+        if not fp or len(fp.values) < 40:
+            continue
+        own_start = _match_credits_against_template(
+            base,
+            fp,
+            base_start_template,
+            base_end_template,
+            max_start_seconds=sample_seconds,
+        )
+        if own_start is not None:
+            relative_start = own_start / INTRO_TICKS - fp.window_start_seconds
+            if relative_start > CREDITS_BOUNDARY_MARGIN_SECONDS:
+                return own_start
+            if sample_seconds >= CREDITS_SAMPLE_STEPS[-1]:
+                return None
+    return None
 
 
 def _find_template_matched_range(
@@ -2198,26 +2290,6 @@ def _cached_runtime_seconds(sha1: str) -> float:
     except Exception:
         pass
     return 0.0
-
-
-def _is_confirmed_clean_version(ref: EpisodeRef) -> bool:
-    data = _cached_mediainfo(ref.sha1)
-    if not data:
-        return False
-    try:
-        from handler.resubscribe_service import WashingService
-
-        result = WashingService._clean_version_result(
-            "tv",
-            ref.series_tmdb_id,
-            ref.season_number,
-            ref.episode_number,
-            data,
-        )
-        return bool(result.get("checked") and result.get("is_clean"))
-    except Exception as e:
-        logger.debug("  ➜ [片头声纹提取] 纯净版预检失败 %s S%sE%s: %s", ref.series_title, ref.season_number, ref.episode_number, e)
-        return False
 
 
 def _cached_mediainfo(sha1: str) -> Any:
