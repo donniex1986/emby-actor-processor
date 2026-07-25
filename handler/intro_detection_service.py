@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 SAMPLE_SECONDS = 600
 INTRO_SAMPLE_STEPS = (180, 300, SAMPLE_SECONDS)
 CREDITS_SAMPLE_STEPS = (180, 300)
-INTRO_DETECTION_ALGORITHM_VERSION = 3
+INTRO_DETECTION_ALGORITHM_VERSION = 4
 MAX_WORK_EPISODES_PER_SEASON = 3
 MAX_WRITE_EPISODES_PER_JOB = MAX_WORK_EPISODES_PER_SEASON
 BATCH_CONTINUATION_DELAY_SECONDS = 3
@@ -1782,7 +1782,13 @@ def _extract_fingerprint(
         ref.episode_number,
         backend or "115",
     )
-    values = _run_ffmpeg_chromaprint(direct_url, window_start=window_start, sample_seconds=sample_seconds)
+    audio_stream_index = _fingerprint_audio_stream_index(ref.sha1)
+    values = _run_ffmpeg_chromaprint(
+        direct_url,
+        window_start=window_start,
+        sample_seconds=sample_seconds,
+        audio_stream_index=audio_stream_index,
+    )
     countable_extract_failure = not reused_url
     if values:
         time.sleep(3)
@@ -1799,6 +1805,7 @@ def _extract_fingerprint(
                 direct_url,
                 window_start=window_start,
                 sample_seconds=sample_seconds,
+                audio_stream_index=audio_stream_index,
             )
             if values:
                 return values
@@ -1819,6 +1826,7 @@ def _run_ffmpeg_chromaprint(
     *,
     window_start: float = 0.0,
     sample_seconds: int = SAMPLE_SECONDS,
+    audio_stream_index: Optional[int] = None,
 ) -> List[int]:
     if not shutil.which("ffmpeg"):
         return []
@@ -1842,6 +1850,8 @@ def _run_ffmpeg_chromaprint(
     cmd.extend([
         "-i",
         direct_url,
+        "-map",
+        f"0:{audio_stream_index}" if audio_stream_index is not None else "0:a:0",
         "-t",
         str(max(1, int(sample_seconds or SAMPLE_SECONDS))),
         "-ac",
@@ -1859,6 +1869,39 @@ def _run_ffmpeg_chromaprint(
         "-",
     ])
     return _parse_raw_chromaprint(_run_command(cmd))
+
+
+def _fingerprint_audio_stream_index(sha1: str) -> Optional[int]:
+    root = _mediainfo_root(_cached_mediainfo(sha1))
+    if not isinstance(root, dict):
+        return None
+    source = root.get("MediaSourceInfo") if isinstance(root.get("MediaSourceInfo"), dict) else root
+    streams = source.get("MediaStreams") if isinstance(source, dict) else None
+    if not isinstance(streams, list):
+        return None
+
+    valid_streams = [stream for stream in streams if _is_valid_fingerprint_audio_stream(stream)]
+    if not valid_streams:
+        return None
+    selected = next((stream for stream in valid_streams if stream.get("IsDefault") is True), valid_streams[0])
+    try:
+        return int(selected.get("Index"))
+    except Exception:
+        return None
+
+
+def _is_valid_fingerprint_audio_stream(stream: Any) -> bool:
+    if not isinstance(stream, dict):
+        return False
+    if str(stream.get("Type") or "").strip().lower() != "audio":
+        return False
+    codec = str(stream.get("Codec") or "").strip().lower()
+    if not codec or codec in {"unknown", "none", "null", "data"} or codec.isdigit():
+        return False
+    try:
+        return int(stream.get("Index")) >= 0
+    except Exception:
+        return False
 
 
 def _run_command(cmd: List[str]) -> bytes:

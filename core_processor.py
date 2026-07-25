@@ -1356,6 +1356,42 @@ class MediaProcessor:
 
                 processed_emby_episodes = set() # 记录已处理的 Emby 分集
                 remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
+                try:
+                    actor_limit = int(self.config.get(
+                        constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
+                        constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+                    ))
+                    if actor_limit <= 0:
+                        actor_limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+                except (ValueError, TypeError):
+                    actor_limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+
+                try:
+                    max_ep_actors = int(self.config.get(
+                        constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS,
+                        constants.DEFAULT_MAX_EPISODE_ACTORS_TO_PROCESS
+                    ))
+                    if max_ep_actors < 0:
+                        max_ep_actors = constants.DEFAULT_MAX_EPISODE_ACTORS_TO_PROCESS
+                except (ValueError, TypeError):
+                    max_ep_actors = constants.DEFAULT_MAX_EPISODE_ACTORS_TO_PROCESS
+
+                def _cast_order_key(actor):
+                    try:
+                        order = actor.get("order")
+                        return int(order) if order is not None else 999
+                    except (ValueError, TypeError):
+                        return 999
+
+                def _limit_cast_for_metadata(raw_cast, limit):
+                    if not raw_cast or limit <= 0:
+                        return []
+                    limited_cast = [
+                        actor for actor in raw_cast
+                        if actor.get("id") and (not remove_no_avatar or actor.get("profile_path"))
+                    ]
+                    limited_cast.sort(key=_cast_order_key)
+                    return limited_cast[:limit]
                 # 构建已翻译角色的映射表 (tmdb_id -> 翻译后的 character) ★★★
                 translated_character_map = {}
                 if final_processed_cast:
@@ -1405,7 +1441,7 @@ class MediaProcessor:
                     # ★ 缓存季演员表的格式化结果
                     if s_num not in formatted_season_casts_db_cache:
                         if season_cast:
-                            filtered_s_cast = [p for p in season_cast if p.get("id") and (not remove_no_avatar or p.get("profile_path"))]
+                            filtered_s_cast = _limit_cast_for_metadata(season_cast, actor_limit)
                             formatted_season_casts_db_cache[s_num] = self._format_episode_cast(filtered_s_cast, item_details_from_emby)
                         else:
                             formatted_season_casts_db_cache[s_num] = []
@@ -1420,26 +1456,24 @@ class MediaProcessor:
                     ep_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in ep_crew if p.get('job') == 'Director']
 
                     # ★★★ 提取分集专属演员表 (含客串) ★★★
-                    max_ep_actors = int(self.config.get(constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS, 0))
                     ep_cast_raw = []
                     
                     # 只有当配置 > 0 时，才提取分集专属演员并截断
                     if max_ep_actors > 0:
                         ep_cast_raw = episode.get('credits', {}).get('cast', []) + episode.get('credits', {}).get('guest_stars', [])
-                        ep_cast_raw = ep_cast_raw[:max_ep_actors]
+                        ep_cast_raw = _limit_cast_for_metadata(ep_cast_raw, max_ep_actors)
                         
                     ep_actors_json_list = []
                     
                     if ep_cast_raw:
                         # 1. 优先使用分集专属演员
-                        filtered_ep_cast = [p for p in ep_cast_raw if p.get("id") and (not remove_no_avatar or p.get("profile_path"))]
                         # 只有分集独有演员才调用格式化
-                        formatted_ep_cast = self._format_episode_cast(filtered_ep_cast, item_details_from_emby)
+                        formatted_ep_cast = self._format_episode_cast(ep_cast_raw, item_details_from_emby)
                         ep_actors_json_list = [
                             {"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} 
                             for p in formatted_ep_cast
                         ]
-                    elif formatted_season_casts_db_cache.get(s_num):
+                    elif max_ep_actors > 0 and formatted_season_casts_db_cache.get(s_num):
                         # 2. 其次使用季(Season)演员表兜底 (直接拿缓存)
                         ep_actors_json_list = [
                             {"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} 
@@ -1581,8 +1615,11 @@ class MediaProcessor:
                     
                     fallback_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in season_crew if p.get('job') == 'Director']
                     
-                    if season_cast:
-                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id") and (not remove_no_avatar or p.get("profile_path"))]
+                    if max_ep_actors > 0 and season_cast:
+                        fallback_actors = [
+                            {"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)}
+                            for p in _limit_cast_for_metadata(season_cast, actor_limit)
+                        ]
                     else:
                         fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
@@ -2444,12 +2481,34 @@ class MediaProcessor:
             formatted_metadata = None
             final_processed_cast = None
 
+            def _limit_cached_cast(cast_list):
+                try:
+                    limit = int(self.config.get(
+                        constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
+                        constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+                    ))
+                    if limit <= 0:
+                        limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+                except (ValueError, TypeError):
+                    limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+
+                def _order_key(actor):
+                    try:
+                        order = actor.get("order")
+                        return int(order) if order is not None else 999
+                    except (ValueError, TypeError):
+                        return 999
+
+                limited = [actor for actor in (cast_list or []) if isinstance(actor, dict)]
+                limited.sort(key=_order_key)
+                return limited[:limit]
+
             # 媒体信息修复模式：即使是强制重处理，也只允许命中数据库缓存后刷新资产信息
             if media_info_only:
                 payload, cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
                 if payload and cast:
                     formatted_metadata = payload
-                    final_processed_cast = cast
+                    final_processed_cast = _limit_cached_cast(cast)
                     using_cached_metadata = True
                     logger.info(f"  ➜ [媒体信息修复] 命中数据库缓存，跳过 TMDb/AI/演员处理，仅刷新视频流资产信息。")
                 else:
@@ -2461,7 +2520,7 @@ class MediaProcessor:
                 payload, cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
                 if payload and cast:
                     formatted_metadata = payload
-                    final_processed_cast = cast
+                    final_processed_cast = _limit_cached_cast(cast)
                     using_cached_metadata = True
                     logger.info(f"  ➜ [数据库缓存] 跳过 TMDb/AI/演员重算，后续由插件恢复元数据和图片。")
 
@@ -2536,7 +2595,11 @@ class MediaProcessor:
                     credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
                     authoritative_cast_source = credits_source.get('cast', [])
                 elif item_type == "Series":
-                    authoritative_cast_source = _get_series_main_cast_from_tmdb(fresh_data)
+                    series_cast_source = (
+                        (aggregated_tmdb_data or {}).get("series_details")
+                        if aggregated_tmdb_data else fresh_data
+                    )
+                    authoritative_cast_source = _get_series_main_cast_from_tmdb(series_cast_source or fresh_data)
 
                 # 先拿豆瓣，再把豆瓣角色预合并进 TMDb 演员表
                 douban_cast_raw = []
@@ -2596,7 +2659,11 @@ class MediaProcessor:
                     credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
                     authoritative_cast_source = credits_source.get('cast', [])
                 elif item_type == "Series":
-                    authoritative_cast_source = _get_series_main_cast_from_tmdb(fresh_data)
+                    series_cast_source = (
+                        (aggregated_tmdb_data or {}).get("series_details")
+                        if aggregated_tmdb_data else fresh_data
+                    )
+                    authoritative_cast_source = _get_series_main_cast_from_tmdb(series_cast_source or fresh_data)
 
                 if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True) and authoritative_cast_source:
                     authoritative_cast_source = [actor for actor in authoritative_cast_source if actor.get("profile_path")]
@@ -3115,7 +3182,30 @@ class MediaProcessor:
         # 步骤 4: ★★★ 针对新增演员的精准补漏翻译 ★★★
         # ======================================================================
         current_cast_list = list(final_cast_map.values())
-        
+
+        actor_limit = self.config.get(
+            constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
+            constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+        )
+        try:
+            actor_limit = int(actor_limit)
+            if actor_limit <= 0:
+                actor_limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+        except (ValueError, TypeError):
+            actor_limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+
+        def _get_actor_order(actor: Dict[str, Any]) -> int:
+            try:
+                order = actor.get('order')
+                return int(order) if order is not None else 999
+            except (ValueError, TypeError):
+                return 999
+
+        current_cast_list.sort(key=_get_actor_order)
+        if len(current_cast_list) > actor_limit:
+            logger.info(f"  -> Final cast count ({len(current_cast_list)}) exceeds limit ({actor_limit}); keeping top {actor_limit} by order.")
+            current_cast_list = current_cast_list[:actor_limit]
+
         if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False):
             texts_to_translate = set()
             for actor in current_cast_list:

@@ -528,6 +528,47 @@ def _json_value(value, default):
         return default
 
 
+def _configured_actor_limit(requested_type: str) -> int:
+    default_limit = constants.DEFAULT_MAX_ACTORS_TO_PROCESS
+    try:
+        limit = int(config_manager.APP_CONFIG.get(
+            constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS,
+            default_limit,
+        ))
+        if limit <= 0:
+            limit = default_limit
+    except (TypeError, ValueError):
+        limit = default_limit
+
+    if str(requested_type or "").strip().title() == "Episode":
+        try:
+            ep_limit = int(config_manager.APP_CONFIG.get(
+                constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS,
+                constants.DEFAULT_MAX_EPISODE_ACTORS_TO_PROCESS,
+            ))
+        except (TypeError, ValueError):
+            ep_limit = constants.DEFAULT_MAX_EPISODE_ACTORS_TO_PROCESS
+        if ep_limit > 0:
+            limit = ep_limit
+
+    return limit
+
+
+def _limit_actor_links(actor_links, requested_type: str):
+    limit = _configured_actor_limit(requested_type)
+    links = [link for link in (actor_links or []) if isinstance(link, dict)]
+
+    def _order_key(link):
+        try:
+            order = link.get("order")
+            return int(order) if order is not None else 999
+        except (TypeError, ValueError):
+            return 999
+
+    links.sort(key=_order_key)
+    return links[:limit]
+
+
 def _normalize_media_path(value: str) -> str:
     path = str(value or "").strip().replace("\\", "/")
     if not path:
@@ -865,7 +906,10 @@ def load_emby_metadata(
                         ],
                     })
             if row.get("actors_ready"):
-                actor_links = _json_value(row.get("actors_json"), [])
+                actor_links = _limit_actor_links(
+                    _json_value(row.get("actors_json"), []),
+                    requested_type,
+                )
                 actor_ids = [link.get("tmdb_id") for link in actor_links if link.get("tmdb_id")]
                 actor_map = {}
                 if actor_ids:

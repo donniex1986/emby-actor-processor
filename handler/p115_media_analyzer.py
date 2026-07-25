@@ -1725,6 +1725,9 @@ class P115MediaAnalyzerMixin:
                 })
 
             elif codec_type == "audio":
+                if not codec or codec in {"unknown", "none", "null", "data"} or codec.isdigit():
+                    continue
+
                 raw_lang = tags.get("language")
                 raw_title = tags.get("title")
                 
