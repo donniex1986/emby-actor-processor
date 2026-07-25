@@ -1462,9 +1462,12 @@ def task_auto_subscribe(processor):
                     logger.debug(f"  ➜ [共享资源] 准备批量探测项失败，已跳过: {_item.get('title')} -> {e}")
             if shared_probe_contexts:
                 task_manager.update_status_from_thread(10, f"正在批量查询共享中心：{len(shared_probe_contexts)} 个订阅...")
-                probe_batch = batch_probe_shared_resources(shared_probe_contexts, limit_per_item=200) or {}
-                if probe_batch.get('supported'):
-                    shared_probe_by_key = probe_batch.get('by_key') or {}
+                try:
+                    probe_batch = batch_probe_shared_resources(shared_probe_contexts, limit_per_item=200) or {}
+                    if probe_batch.get('supported'):
+                        shared_probe_by_key = probe_batch.get('by_key') or {}
+                except Exception as e:
+                    logger.warning(f"  ➜ [共享资源] 批量探测失败，自动降级后续订阅源: {e}", exc_info=True)
 
         # 2. 遍历待办列表，逐一处理
         for i, item in enumerate(wanted_items):
