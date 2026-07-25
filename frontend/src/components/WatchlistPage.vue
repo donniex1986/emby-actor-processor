@@ -444,7 +444,7 @@
                   <div class="setting-header">
                     <div>
                       <div class="setting-label">媒体库范围</div>
-                      <div class="setting-desc">不选则不限制；建议排除超大库。</div>
+                      <div class="setting-desc">扫片头限定的范围，不选则不限制。</div>
                     </div>
                     <n-select
                       v-model:value="watchlistConfig.intro_detection_library_ids"
