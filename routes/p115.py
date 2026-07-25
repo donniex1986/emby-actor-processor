@@ -42,6 +42,28 @@ _deep_delete_lock = threading.Lock()
 _deep_delete_snapshots = {}
 
 
+def _build_deep_delete_file_snapshots(pickcodes):
+    snapshots = []
+    for pc in pickcodes or []:
+        pc_text = str(pc or '').strip()
+        if not pc_text:
+            continue
+        try:
+            row = P115CacheManager.get_file_cache_by_pickcode(pc_text) or {}
+        except Exception as e:
+            logger.debug(f"  ➜ [ETK 深度删除] 读取 115 缓存快照失败: PC={pc_text[:8]}..., err={e}")
+            row = {}
+        fid = str(row.get('id') or '').strip()
+        if not fid:
+            continue
+        snapshots.append({
+            'pick_code': str(row.get('pick_code') or pc_text).strip(),
+            'fid': fid,
+            'parent_id': str(row.get('parent_id') or '').strip(),
+        })
+    return snapshots
+
+
 def _normalize_p115_category_path(path):
     text = str(path or '').strip().replace('\\', '/')
     text = re.sub(r'/+', '/', text).strip('/')
@@ -2159,6 +2181,7 @@ def _prepare_deep_delete_response(sha1, expected_pick_code=''):
         'item_type': actual_type,
         'series_id': str(root.get('SeriesId') or payload.get('series_id') or '').strip(),
         'pickcodes': pickcodes,
+        'p115_file_snapshots': _build_deep_delete_file_snapshots(pickcodes),
     }
     with _deep_delete_lock:
         expired = [
@@ -2193,7 +2216,10 @@ def _commit_deep_delete_response():
             from database import maintenance_db
             from handler.p115_service import delete_115_files_by_webhook
 
-            delete_115_files_by_webhook(snapshot['pickcodes'])
+            delete_115_files_by_webhook(
+                snapshot['pickcodes'],
+                file_snapshots=snapshot.get('p115_file_snapshots') or [],
+            )
             maintenance_db.cleanup_deleted_media_item(
                 item_id=snapshot['item_id'],
                 item_name=snapshot['item_name'],

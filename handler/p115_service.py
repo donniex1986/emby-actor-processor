@@ -2910,7 +2910,8 @@ class P115Service:
                         'code': 'invalid_target_cid',
                         'message': '拒绝将文件移动到 115 根目录',
                     }
-                return self._call_api('fs_move', fids, to_cid, normalizer=_p115_normalize_common_response)
+                with P115Service._move_lock:
+                    return self._call_api('fs_move', fids, to_cid, normalizer=_p115_normalize_common_response)
 
             def fs_copy(self, fids, to_cid):
                 return self._call_api('fs_copy', fids, to_cid, normalizer=_p115_normalize_common_response)
@@ -3003,7 +3004,8 @@ class P115Service:
                 return _sequential_rename(reason='openapi_priority_or_cookie_unavailable')
 
             def fs_delete(self, fids):
-                return self._call_api('fs_delete', fids, normalizer=_p115_normalize_common_response)
+                with P115Service._move_lock:
+                    return self._call_api('fs_delete', fids, normalizer=_p115_normalize_common_response)
             
             def rb_del(self, tids=None):
                 # 清空回收站是 OpenAPI 独有，强制 OpenAPI，不参与 Cookie 优先级。
@@ -10515,25 +10517,66 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
 class WebhookDeleteBuffer:
     _lock = threading.Lock()
     _pickcodes = set()
+    _file_snapshots = {}
+    _retry_counts = {}
     _timer = None
     _is_flushing = False
+    _max_retries = 5
 
     @classmethod
-    def add(cls, pickcodes):
+    def _schedule_locked(cls, delay):
+        if cls._timer is not None:
+            try:
+                cls._timer.cancel()
+            except Exception:
+                pass
+        timer = threading.Timer(delay, cls._execute_all)
+        timer.daemon = True
+        cls._timer = timer
+        timer.start()
+
+    @classmethod
+    def add(cls, pickcodes, file_snapshots=None):
         if not pickcodes: return
+        normalized_pickcodes = []
+        for pc in pickcodes or []:
+            pc_text = str(pc or '').strip()
+            if pc_text:
+                normalized_pickcodes.append(pc_text)
+        if not normalized_pickcodes:
+            return
+
+        normalized_pickcode_set = set(normalized_pickcodes)
+        snapshot_map = {}
+        for snap in file_snapshots or []:
+            if not isinstance(snap, dict):
+                continue
+            pc_text = str(snap.get('pick_code') or '').strip()
+            fid = str(snap.get('fid') or snap.get('id') or '').strip()
+            if not pc_text or pc_text not in normalized_pickcode_set or not fid:
+                continue
+            snapshot_map[pc_text] = {
+                'id': fid,
+                'parent_id': str(snap.get('parent_id') or '').strip(),
+                'pick_code': pc_text,
+            }
+
         with cls._lock:
-            cls._pickcodes.update(pickcodes)
+            cls._pickcodes.update(normalized_pickcodes)
+            cls._file_snapshots.update(snapshot_map)
 
             if cls._is_flushing:
                 return
 
             # 如果有新任务进来，重置定时器
             if cls._timer is not None:
-                cls._timer.kill()
+                try:
+                    cls._timer.cancel()
+                except Exception:
+                    pass
 
-            from gevent import spawn_later
             # 延迟 3 秒，足以收集一键去重/批量删除瞬间发来的所有 Webhook
-            cls._timer = spawn_later(3.0, cls._execute_all)
+            cls._schedule_locked(3.0)
 
     @classmethod
     def _execute_all(cls):
@@ -10543,34 +10586,67 @@ class WebhookDeleteBuffer:
                 return
 
             pickcodes = list(cls._pickcodes)
+            file_snapshots = {
+                pc: cls._file_snapshots.pop(pc, None)
+                for pc in pickcodes
+            }
+            retry_counts = {
+                pc: cls._retry_counts.pop(pc, 0)
+                for pc in pickcodes
+            }
             cls._pickcodes.clear()
             if pickcodes:
                 cls._is_flushing = True
 
         if not pickcodes: return
 
-        from gevent import spawn
-        spawn(cls._run_batch, pickcodes)
+        threading.Thread(
+            target=cls._run_batch,
+            args=(pickcodes, file_snapshots, retry_counts),
+            name="p115-webhook-delete-buffer",
+            daemon=True,
+        ).start()
 
     @classmethod
-    def _run_batch(cls, pickcodes):
+    def _run_batch(cls, pickcodes, file_snapshots=None, retry_counts=None):
+        retry_pickcodes = []
         try:
-            cls._process_batch(pickcodes)
+            retry_pickcodes = cls._process_batch(pickcodes, file_snapshots=file_snapshots) or []
         finally:
             with cls._lock:
+                had_new_pickcodes = bool(cls._pickcodes)
+                next_retry_count = 0
+                for pc in retry_pickcodes:
+                    pc_text = str(pc or '').strip()
+                    if not pc_text:
+                        continue
+                    count = int((retry_counts or {}).get(pc_text) or 0) + 1
+                    if count > cls._max_retries:
+                        logger.error(
+                            f"  ➜ [深度删除] 115 联动删除重试已达上限，放弃本轮队列: PC={pc_text[:8]}..."
+                        )
+                        continue
+                    cls._pickcodes.add(pc_text)
+                    if (file_snapshots or {}).get(pc_text):
+                        cls._file_snapshots[pc_text] = file_snapshots[pc_text]
+                    cls._retry_counts[pc_text] = count
+                    next_retry_count = max(next_retry_count, count)
+
                 cls._is_flushing = False
                 if cls._pickcodes and cls._timer is None:
-                    from gevent import spawn_later
-                    cls._timer = spawn_later(3.0, cls._execute_all)
+                    delay = 3.0 if had_new_pickcodes else min(60.0, 5.0 * max(1, next_retry_count))
+                    cls._schedule_locked(delay)
 
     @classmethod
-    def _process_batch(cls, pickcodes):
+    def _process_batch(cls, pickcodes, file_snapshots=None):
         if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
             logger.info("  ➜ [深度删除] 联动删除未开启，放弃已进入缓冲队列的网盘删除任务。")
-            return
+            return []
 
         client = P115Service.get_client()
-        if not client: return
+        if not client:
+            logger.warning("  ➜ [深度删除] 115 客户端未初始化，稍后重试网盘联动删除。")
+            return pickcodes
 
         try:
             # 1. 获取免死金牌名单 (绝对不能删的根目录及其祖先)
@@ -10582,12 +10658,45 @@ class WebhookDeleteBuffer:
                     # =================================================================
                     # 第一步：通过 PC 码从本地缓存锁定初始文件 (FID) 和 父目录 (PID)
                     # =================================================================
-                    cursor.execute("SELECT id, parent_id FROM p115_filesystem_cache WHERE pick_code = ANY(%s)", (list(pickcodes),))
+                    cursor.execute(
+                        "SELECT id, parent_id, pick_code FROM p115_filesystem_cache WHERE pick_code = ANY(%s)",
+                        (list(pickcodes),),
+                    )
                     initial_files = cursor.fetchall()
+                    resolved_pickcodes = {
+                        str(row.get('pick_code') or '').strip()
+                        for row in initial_files
+                        if str(row.get('pick_code') or '').strip()
+                    }
+
+                    snapshot_rows = []
+                    for pc, snap in (file_snapshots or {}).items():
+                        if pc in resolved_pickcodes or not snap:
+                            continue
+                        fid = str(snap.get('id') or snap.get('fid') or '').strip()
+                        if not fid:
+                            continue
+                        snapshot_rows.append({
+                            'id': fid,
+                            'parent_id': str(snap.get('parent_id') or '').strip(),
+                            'pick_code': pc,
+                        })
+                        resolved_pickcodes.add(pc)
+
+                    if snapshot_rows:
+                        initial_files = list(initial_files) + snapshot_rows
+                        logger.info(
+                            f"  ➜ [深度删除] 已使用提交时快照补齐 {len(snapshot_rows)} 个待删 115 文件，避免任务并发导致缓存漏命中。"
+                        )
+
+                    missing_pickcodes = [
+                        pc for pc in pickcodes
+                        if str(pc or '').strip() not in resolved_pickcodes
+                    ]
 
                     if not initial_files:
-                        logger.warning(f"  ➜ [深度删除] 本地缓存未找到对应 PC 码的文件，无法执行本地推导，任务终止。")
-                        return
+                        logger.warning("  ➜ [深度删除] 本地缓存未找到对应 PC 码的文件，稍后重试网盘联动删除。")
+                        return pickcodes
 
                     deleted_nodes = set()       # 记录所有被判死刑的节点 (文件 + 变空的目录)
                     nodes_to_check = set()      # 待检查是否变空的父目录
@@ -10652,7 +10761,7 @@ class WebhookDeleteBuffer:
                     if final_api_ids:
                         if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
                             logger.info("  ➜ [深度删除] 联动删除已关闭，取消调用 115 删除 API。")
-                            return
+                            return []
                         logger.info(f"  ➜ [深度删除] 本地推导完毕！向 115 发送批量删除指令 (共 {len(final_api_ids)} 个顶级节点)...")
                         resp = client.fs_delete(final_api_ids)
                         
@@ -10660,7 +10769,7 @@ class WebhookDeleteBuffer:
                             logger.info(f"  ➜ [深度删除] 115 网盘文件/空目录已移入回收站。")
                         else:
                             logger.error(f"  ➜ [深度删除] 115 API 删除失败: {resp}")
-                            return # API 失败则不清理本地库，保持一致性
+                            return pickcodes # API 失败则不清理本地库，保持一致性
 
                     # =================================================================
                     # 第五步：清理本地数据库记录 (缓存表 + 整理记录表)
@@ -10677,10 +10786,18 @@ class WebhookDeleteBuffer:
                         conn.commit()
                         logger.info(f"  ➜ [深度删除] 本地数据清理完毕: 缓存表移除 {deleted_cache_count} 条, 记录表移除 {deleted_record_count} 条。")
 
+                    if missing_pickcodes:
+                        logger.warning(
+                            f"  ➜ [深度删除] 仍有 {len(missing_pickcodes)} 个 PC 未定位到 115 文件，将保留重试。"
+                        )
+                        return missing_pickcodes
+                    return []
+
         except Exception as e:
             logger.error(f"  ➜ [深度删除] 执行异常: {e}", exc_info=True)
+            return pickcodes
 
-def delete_115_files_by_webhook(pickcodes):
+def delete_115_files_by_webhook(pickcodes, file_snapshots=None):
     """
     【V6 终极缓冲版】接收神医 Webhook 传来的提取码，加入缓冲队列。
     """
@@ -10700,7 +10817,7 @@ def delete_115_files_by_webhook(pickcodes):
             )
     except Exception as e:
         logger.error(f"  ➜ [深度删除] 上传监控本地联动失败: {e}", exc_info=True)
-    WebhookDeleteBuffer.add(pickcodes)
+    WebhookDeleteBuffer.add(pickcodes, file_snapshots=file_snapshots)
 
 # ======================================================================
 # ★★★ 手动纠错后共享 RAW 覆盖上传触发器 ★★★
