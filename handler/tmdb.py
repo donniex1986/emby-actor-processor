@@ -129,6 +129,7 @@ def _tmdb_request(
     use_default_language: bool = True,
     *,
     raise_not_found: bool = False,
+    quiet_not_found: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """【V2.1 - 最终驱魔版】增加了 use_default_language 开关，用于控制是否添加默认语言参数。"""
     if not api_key:
@@ -155,6 +156,9 @@ def _tmdb_request(
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404 and raise_not_found:
             raise TmdbNotFoundError(endpoint) from e
+        if e.response.status_code == 404 and quiet_not_found:
+            logger.debug(f"  ➜ TMDb API 未找到资源，按空结果处理。URL: {full_url}")
+            return {}
         error_details = ""
         try:
             error_data = e.response.json()
@@ -363,7 +367,16 @@ def get_item_images_tmdb(
         endpoint = f"/collection/{tmdb_id}/images"
     else:
         return None
-    return _tmdb_request(endpoint, api_key, {}, use_default_language=False)
+    data = _tmdb_request(
+        endpoint,
+        api_key,
+        {},
+        use_default_language=False,
+        quiet_not_found=item_type == "Episode",
+    )
+    if data == {} and item_type == "Episode":
+        return {"stills": []}
+    return data
 
 # --- 获取电视剧某一季的集总数 ---
 def get_season_episode_count(api_key: str, tmdb_id: int, season_number: int) -> int:
