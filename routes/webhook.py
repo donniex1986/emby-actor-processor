@@ -1600,18 +1600,19 @@ def activate_emby_collection():
     if not tmdb_collection_id.isdigit() or not emby_collection_id:
         return jsonify({'ok': False, 'error': 'invalid collection activation request'}), 400
 
-    activated = collections_handler.activate_collection_from_emby(
+    activation = collections_handler.activate_collection_from_emby(
         tmdb_collection_id,
         emby_collection_id,
         collection_name,
     )
-    if not activated:
+    if not activation.get('ok'):
         return jsonify({'ok': False, 'error': 'collection metadata cache not found'}), 404
-    spawn(
-        collections_handler.subscribe_missing_for_activated_collection,
-        tmdb_collection_id,
-    )
-    return jsonify({'ok': True}), 200
+    if activation.get('changed'):
+        spawn(
+            collections_handler.subscribe_missing_for_activated_collection,
+            tmdb_collection_id,
+        )
+    return jsonify({'ok': True, **activation}), 200
 
 
 @webhook_bp.route('/api/emby/metadata/backfill', methods=['POST'])

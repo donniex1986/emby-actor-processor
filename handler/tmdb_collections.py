@@ -342,12 +342,12 @@ def activate_collection_from_emby(
     tmdb_collection_id: str,
     emby_collection_id: str,
     collection_name: str = "",
-) -> bool:
+) -> Dict[str, Any]:
     """Activate cached collection metadata after the Emby plugin creates a BoxSet."""
     tmdb_collection_id = str(tmdb_collection_id or '').strip()
     emby_collection_id = str(emby_collection_id or '').strip()
     if not tmdb_collection_id.isdigit() or not emby_collection_id:
-        return False
+        return {'ok': False, 'reason': 'invalid_request'}
 
     local_collection = tmdb_collection_db.get_native_collection_by_tmdb_id(tmdb_collection_id)
     if not local_collection:
@@ -355,9 +355,24 @@ def activate_collection_from_emby(
             "  ➜ [合集激活] 未找到 TMDb:%s 的未激活元数据缓存。",
             tmdb_collection_id,
         )
-        return False
+        return {'ok': False, 'reason': 'metadata_not_found'}
 
     tmdb_coll_name = collection_name or local_collection.get('name') or tmdb_collection_id
+    current_emby_id = str(local_collection.get('emby_collection_id') or '').strip()
+    current_name = str(local_collection.get('name') or '').strip()
+    if (
+        local_collection.get('is_active')
+        and current_emby_id == emby_collection_id
+        and (not collection_name or current_name == collection_name)
+    ):
+        logger.debug(
+            "  ➜ [合集激活] Emby BoxSet '%s' 已是激活状态，跳过重复绑定 (Emby:%s, TMDb:%s)。",
+            tmdb_coll_name,
+            emby_collection_id,
+            tmdb_collection_id,
+        )
+        return {'ok': True, 'changed': False, 'already_active': True}
+
     if not tmdb_collection_db.upsert_native_collection({
         'emby_collection_id': emby_collection_id,
         'is_active': True,
@@ -368,7 +383,7 @@ def activate_collection_from_emby(
         'all_tmdb_ids': local_collection.get('all_tmdb_ids_json') or [],
         'overview': local_collection.get('overview', ''),
     }):
-        return False
+        return {'ok': False, 'reason': 'db_update_failed'}
 
     logger.info(
         "  ➜ [合集激活] 已绑定 Emby BoxSet '%s' (Emby:%s, TMDb:%s)。",
@@ -376,7 +391,7 @@ def activate_collection_from_emby(
         emby_collection_id,
         tmdb_collection_id,
     )
-    return True
+    return {'ok': True, 'changed': True, 'already_active': False}
 
 
 def subscribe_missing_for_activated_collection(tmdb_collection_id: str) -> None:
