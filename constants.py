@@ -96,7 +96,7 @@ TELEGRAM_USERBOT_API_ID = 30841166
 TELEGRAM_USERBOT_API_HASH_PLACEHOLDER = "center-managed-login"
 DEFAULT_TELEGRAM_NOTIFICATION_TEMPLATES = {
     "library_new": "{{ media_icon }} {{ title }} {{ notification_title }}\n\n{{ episode_info }}\n{{ media_params }}\n⏰ *时间*: `{{ time }}`\n📝 *剧情*: {{ overview }}\n{{ review_warning }}",
-    "transfer_success": "{{ action_title }}\n{{ title }}\n\n{{ episode_info }}\n🕒 *时间*: `{{ time }}`\n🎭 *类别*: {{ type }}\n{{ rating }}\n{{ overview }}",
+    "transfer_success": "{{ action_title }}\n{{ title }}\n\n{{ episode_info }}\n{{ source }}🕒 *时间*: `{{ time }}`\n🎭 *类别*: {{ type }}\n{{ rating }}\n{{ overview }}",
     "playback": "{{ action }}\n\n👤 *用户*: `{{ user }}`\n🎬 *媒体*: {{ title }}\n📱 *设备*: `{{ device }}（{{ client }}）`\n🕒 *时间*: `{{ time }}`\n{{ overview }}",
     "recognize_fail": "⚠️ *识别失败通知*\n\n📁 *文件名*: `{{ file_name }}`\n❓ *原因*: {{ reason }}\n🕒 *时间*: `{{ time }}`\n\n💡 _文件已被移入「未识别」目录，请前往 WebUI 手动纠错。_",
     "intercept_notify": "⛔ *洗版拦截通知*\n\n📁 *拦截文件*: {{ file_names }}\n🚫 *原因*: {{ reason }}\n🕒 *时间*: `{{ time }}`\n\n💡 _文件未达到优先级标准，已被标记「质检不合格」。_",

@@ -807,6 +807,17 @@ def send_transfer_success_notification(task: dict):
         episode_number = task.get('episode_number')
         is_pack = task.get('is_pack', False)
         tmdb_id = task.get('tmdb_id')
+        candidate = task.get('candidate') if isinstance(task.get('candidate'), dict) else {}
+        source_name = (
+            task.get('source_channel')
+            or task.get('channel_name')
+            or candidate.get('source_channel')
+            or candidate.get('source_username')
+            or candidate.get('source_chat_id')
+            or ''
+        )
+        source_name = str(source_name or '').strip()
+        source_text = f"📡 *来源*: `{_markdown_code_text(source_name)}`\n" if source_name else ""
 
         display_title = f"{title} ({year})" if year else title
         escaped_title = escape_markdown(display_title)
@@ -881,6 +892,7 @@ def send_transfer_success_notification(task: dict):
             f"{action_title}\n"
             f"*{escaped_title}*\n\n"
             f"{season_info}"
+            f"{source_text}"
             f"🕒 *时间*: `{current_time}`\n"
             f"🎭 *类别*: {type_str}\n"
             f"{rating}"
@@ -895,8 +907,18 @@ def send_transfer_success_notification(task: dict):
             'type': type_str,
             'rating': rating.rstrip(),
             'overview': overview_text.rstrip(),
+            'source': source_text,
+            'source_name': escape_markdown(source_name),
             'tmdb_id': escape_markdown(tmdb_id or ''),
         }, default_caption)
+        if source_text:
+            source_marker = f"`{_markdown_code_text(source_name)}`"
+            if '*来源*' not in caption and source_marker not in caption:
+                time_prefix = "🕒 *时间*:"
+                if time_prefix in caption:
+                    caption = caption.replace(time_prefix, f"{source_text}{time_prefix}", 1)
+                else:
+                    caption = f"{caption.rstrip()}\n{source_text.rstrip()}"
 
         global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
         admin_ids = set(user_db.get_admin_telegram_chat_ids())

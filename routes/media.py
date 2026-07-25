@@ -1119,6 +1119,15 @@ def _reset_intro_detection_failures(context, reset_intro, reset_credits):
                     (keys, kinds),
                 )
                 deleted = cursor.rowcount
+                cursor.execute(
+                    """
+                    DELETE FROM p115_intro_fingerprint_failures
+                    WHERE failure_key = ANY(%s)
+                      AND kind = ANY(%s)
+                    """,
+                    (keys, kinds),
+                )
+                deleted += cursor.rowcount
             conn.commit()
         return deleted
     except Exception as exc:
