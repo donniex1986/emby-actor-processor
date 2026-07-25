@@ -246,6 +246,26 @@
           <div class="episode-selector-summary">
             {{ episodeSelectorSummary }}
           </div>
+          <div v-if="episodeSelectorMode === 'introCredits'" class="episode-selector-toolbar">
+            <n-popconfirm
+              positive-text="确认清除"
+              negative-text="取消"
+              @positive-click="clearIntroCreditsForAllEpisodes"
+            >
+              <template #trigger>
+                <n-button
+                  type="warning"
+                  secondary
+                  size="small"
+                  :loading="isClearingIntroCredits"
+                  :disabled="isClearingIntroCredits || episodesList.length === 0"
+                >
+                  一键清除片头片尾
+                </n-button>
+              </template>
+              确认清除当前剧集所有在库分集的片头片尾标记？清除后可重新提取。
+            </n-popconfirm>
+          </div>
 
           <section
             v-for="season in episodeSeasonGroups"
@@ -894,6 +914,7 @@ const handleIntroCreditsButtonClick = async () => {
 const showIntroCreditsEditor = ref(false);
 const isLoadingIntroCredits = ref(false);
 const isSavingIntroCredits = ref(false);
+const isClearingIntroCredits = ref(false);
 const introCreditsContext = ref({
   sha1: '',
   runtime_seconds: null
@@ -1001,6 +1022,50 @@ const saveIntroCredits = async () => {
     isSavingIntroCredits.value = false;
   }
 };
+
+const clearIntroCreditsForAllEpisodes = async () => {
+  const targets = episodesList.value
+    .map((ep) => ({ id: ep.emby_id, label: getEpisodeTooltip(ep) }))
+    .filter((ep) => ep.id);
+  if (!targets.length || isClearingIntroCredits.value) return;
+
+  isClearingIntroCredits.value = true;
+  const loadingMsg = message.loading(`正在清除 ${targets.length} 集片头片尾...`, { duration: 0 });
+  let successCount = 0;
+  let failedCount = 0;
+
+  try {
+    for (const target of targets) {
+      try {
+        const info = await axios.get(`/api/media_info/chapters/${target.id}`);
+        const sha1 = info.data?.sha1;
+        if (!sha1) throw new Error('missing sha1');
+        await axios.post(`/api/media_info/chapters/${target.id}`, {
+          sha1,
+          intro_enabled: false,
+          intro_start_seconds: 0,
+          intro_end_seconds: 90,
+          credits_enabled: false,
+          credits_start_seconds: null
+        });
+        successCount += 1;
+      } catch (e) {
+        failedCount += 1;
+        console.warn('清除片头片尾失败:', target.label, e);
+      }
+    }
+
+    if (failedCount > 0) {
+      message.warning(`已清除 ${successCount} 集，失败 ${failedCount} 集，请查看后端日志。`);
+    } else {
+      message.success(`已清除 ${successCount} 集片头片尾标记。`);
+    }
+  } finally {
+    loadingMsg.destroy();
+    isClearingIntroCredits.value = false;
+  }
+};
+
 // 1. 获取语言映射表
 const fetchLanguageMapping = async () => {
   try {
@@ -1575,6 +1640,12 @@ const handleSaveChanges = async () => {
   margin-bottom: 12px;
   color: var(--n-text-color-3);
   font-size: 13px;
+}
+
+.episode-selector-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin: -2px 0 12px;
 }
 
 .episode-season-block {
