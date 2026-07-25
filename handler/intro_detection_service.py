@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 SAMPLE_SECONDS = 600
 INTRO_SAMPLE_STEPS = (180, 300, SAMPLE_SECONDS)
 CREDITS_SAMPLE_STEPS = (180, 300)
-INTRO_DETECTION_ALGORITHM_VERSION = 4
+INTRO_DETECTION_ALGORITHM_VERSION = 5
 MAX_WORK_EPISODES_PER_SEASON = 3
 MAX_WRITE_EPISODES_PER_JOB = MAX_WORK_EPISODES_PER_SEASON
 BATCH_CONTINUATION_DELAY_SECONDS = 3
@@ -820,11 +820,22 @@ def _detect_and_write_intro(
     if _has_detection_failure(_failure_key_for_season(target), FINGERPRINT_KIND_INTRO):
         return
 
-    pending_refs = _pending_detection_refs(
+    all_pending_refs = _pending_detection_refs(
         season_refs,
         FINGERPRINT_KIND_INTRO,
-        limit=MAX_WRITE_EPISODES_PER_JOB,
     )
+    if not all_pending_refs:
+        return
+
+    uncached_pending_refs = [
+        ref for ref in all_pending_refs
+        if not _fingerprint_cache_ready(ref, FINGERPRINT_KIND_INTRO, SAMPLE_SECONDS)
+    ]
+    if not uncached_pending_refs:
+        _detect_cached_intro_groups(target, all_pending_refs, season_refs)
+        return
+
+    pending_refs = uncached_pending_refs[:MAX_WRITE_EPISODES_PER_JOB]
     if not pending_refs:
         return
 
@@ -859,16 +870,8 @@ def _detect_and_write_intro(
                 max_start_seconds=min(MAX_INTRO_START_SECONDS, sample_seconds),
             )
         except _FingerprintMatchTimeout:
-            _mark_detection_failure(
-                target,
-                FINGERPRINT_KIND_INTRO,
-                scope='season',
-                reason='intro_match_timeout',
-                sample_count=len(fps),
-                episode_count=len(season_refs),
-            )
             logger.warning(
-                "  ➜ [片头片尾提取] 《%s》第 %s 季片头公共片段匹配超时，当前算法版本不再自动重试。",
+                "  [intro] %s season %s batch match timed out; keep fingerprints and continue later batches.",
                 target.series_title,
                 target.season_number,
             )
@@ -880,15 +883,7 @@ def _detect_and_write_intro(
         logger.info("  ➜ [片头片尾提取] 《%s》第 %s 季有效片头指纹不足，暂不写入。", target.series_title, target.season_number)
         return
     if not detected:
-        _mark_detection_failure(
-            target,
-            FINGERPRINT_KIND_INTRO,
-            scope='season',
-            reason='no_common_intro',
-            sample_count=len(fps),
-            episode_count=len(season_refs),
-        )
-        logger.info("  ➜ [片头片尾提取] 《%s》第 %s 季未找到稳定公共片头，当前算法版本不再重试。", target.series_title, target.season_number)
+        logger.info("  [intro] %s season %s batch has no common intro; keep fingerprints and continue later batches.", target.series_title, target.season_number)
         return
 
     base_fp, base_start, base_end, ranges_by_sha1, matched = detected
@@ -926,13 +921,11 @@ def _detect_and_write_intro(
                 continue
         if not own_range:
             if had_fingerprint:
-                _mark_detection_failure(
-                    ref,
-                    FINGERPRINT_KIND_INTRO,
-                    scope='episode',
-                    reason='no_episode_intro_match',
-                    sample_count=len(fps),
-                    episode_count=len(season_refs),
+                logger.info(
+                    "  [intro] %s S%02dE%02d did not match this batch template; keep fingerprint for season cross-match.",
+                    ref.series_title,
+                    ref.season_number,
+                    ref.episode_number,
                 )
             else:
                 logger.info(
@@ -957,6 +950,115 @@ def _detect_and_write_intro(
         len(sample_refs),
         selected_sample_seconds,
         matched,
+    )
+
+
+def _detect_cached_intro_groups(
+    target: EpisodeRef,
+    pending_refs: Sequence[EpisodeRef],
+    season_refs: Sequence[EpisodeRef],
+) -> None:
+    fps: List[FingerprintRef] = []
+    for ref in pending_refs:
+        fp = _load_cached_fingerprint_ref(ref, FINGERPRINT_KIND_INTRO, SAMPLE_SECONDS)
+        if fp and len(fp.values) >= 40:
+            fps.append(fp)
+
+    if len(fps) < 2:
+        for fp in fps:
+            _mark_detection_failure(
+                fp.episode,
+                FINGERPRINT_KIND_INTRO,
+                scope='episode',
+                reason='no_pair_intro_match',
+                sample_count=len(fps),
+                episode_count=len(season_refs),
+            )
+        logger.info(
+            "  [intro] %s season %s has fewer than 2 pending cached fingerprints; cross-match skipped.",
+            target.series_title,
+            target.season_number,
+        )
+        return
+
+    remaining = list(fps)
+    ranges_by_sha1: Dict[str, Tuple[int, int]] = {}
+    template_count = 0
+
+    while len(remaining) >= 2:
+        detected = None
+        for base_index, base_fp in enumerate(remaining):
+            for other_fp in remaining[base_index + 1:]:
+                try:
+                    detected = _detect_common_intro_for_base(
+                        base_fp,
+                        [base_fp, other_fp],
+                        max_start_seconds=MAX_INTRO_START_SECONDS,
+                        deadline=_new_match_deadline(EPISODE_MATCH_TIMEOUT_SECONDS),
+                    )
+                except _FingerprintMatchTimeout:
+                    detected = None
+                if detected:
+                    break
+            if detected:
+                break
+
+        if not detected:
+            break
+
+        base_fp, base_start, base_end, group_ranges, _matched = detected
+        template_count += 1
+        for fp in list(remaining):
+            if fp.episode.sha1 in group_ranges:
+                continue
+            try:
+                own_range = _match_intro_against_template(
+                    base_fp,
+                    fp,
+                    base_start,
+                    base_end,
+                    max_start_seconds=MAX_INTRO_START_SECONDS,
+                    deadline=_new_match_deadline(EPISODE_MATCH_TIMEOUT_SECONDS),
+                )
+            except _FingerprintMatchTimeout:
+                own_range = None
+            if own_range:
+                group_ranges[fp.episode.sha1] = own_range
+
+        ranges_by_sha1.update(group_ranges)
+        remaining = [fp for fp in remaining if fp.episode.sha1 not in group_ranges]
+        time.sleep(0)
+
+    updated = 0
+    attempted = 0
+    refs_by_sha1 = {ref.sha1: ref for ref in pending_refs}
+    for sha1, own_range in ranges_by_sha1.items():
+        ref = refs_by_sha1.get(sha1)
+        if not ref:
+            continue
+        attempted += 1
+        if _write_intro_for_episode(ref, own_range[0], own_range[1]):
+            updated += 1
+        time.sleep(0)
+
+    for fp in remaining:
+        _mark_detection_failure(
+            fp.episode,
+            FINGERPRINT_KIND_INTRO,
+            scope='episode',
+            reason='no_pair_intro_match',
+            sample_count=len(fps),
+            episode_count=len(season_refs),
+        )
+
+    logger.info(
+        "  [intro] %s season %s cached cross-match complete: %s templates, wrote %s/%s episodes, unmatched %s.",
+        target.series_title,
+        target.season_number,
+        template_count,
+        updated,
+        attempted,
+        len(remaining),
     )
 
 
@@ -1579,6 +1681,51 @@ def _episode_from_payload(payload: Dict[str, Any]) -> Optional[EpisodeRef]:
         source_library_id=str(payload.get("source_library_id") or "").strip(),
         path=str(payload.get("path") or "").strip(),
     )
+
+
+def _fingerprint_cache_ready(
+    ref: EpisodeRef,
+    kind: str,
+    minimum_sample_seconds: int = 0,
+) -> bool:
+    cached = _load_fingerprint_cache(
+        ref.sha1,
+        kind=kind,
+        minimum_sample_seconds=minimum_sample_seconds,
+    )
+    if not cached:
+        return False
+    _values, cached_sample_seconds = cached
+    cached_coverage = _normalize_fingerprint_coverage(cached_sample_seconds, kind)
+    return cached_coverage + FINGERPRINT_CACHE_TOLERANCE_SECONDS >= int(minimum_sample_seconds or 0)
+
+
+def _load_cached_fingerprint_ref(
+    ref: EpisodeRef,
+    kind: str,
+    requested_sample_seconds: int,
+) -> Optional[FingerprintRef]:
+    window_start, sample_seconds = _fingerprint_window(ref, kind, requested_sample_seconds)
+    if sample_seconds < MIN_INTRO_SECONDS:
+        return None
+    cached = _load_fingerprint_cache(
+        ref.sha1,
+        kind=kind,
+        minimum_sample_seconds=sample_seconds,
+    )
+    if not cached:
+        return None
+    cached_values, cached_sample_seconds = cached
+    cached_coverage = _normalize_fingerprint_coverage(cached_sample_seconds, kind)
+    if cached_coverage + FINGERPRINT_CACHE_TOLERANCE_SECONDS < sample_seconds:
+        return None
+    values = _slice_cached_fingerprint(
+        cached_values,
+        cached_coverage,
+        sample_seconds,
+        kind,
+    )
+    return FingerprintRef(ref, values, sample_seconds, window_start, kind)
 
 
 def _load_or_extract_fingerprint(
