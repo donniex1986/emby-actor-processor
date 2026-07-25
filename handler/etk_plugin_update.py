@@ -121,9 +121,34 @@ def _container_network_values(container):
 
 def _is_emby_container(container):
     attrs = container.attrs or {}
-    image = str(((attrs.get('Config') or {}).get('Image')) or '').lower()
+    config = attrs.get('Config') or {}
+    image = str((config.get('Image')) or '').lower()
     name = str(container.name or '').lower()
-    return 'emby' in name or 'emby' in image
+    labels = config.get('Labels') or {}
+    label_values = ' '.join(str(value or '').lower() for value in labels.values())
+
+    # ETK's own container/image contains "emby-toolkit"; do not count it as an
+    # Emby server candidate, especially in host-network deployments.
+    haystack = ' '.join([image, name, label_values])
+    excluded_markers = (
+        'emby-toolkit',
+        'etk-mediainfo-bridge',
+        'hbq0405/emby-toolkit',
+    )
+    if any(marker in haystack for marker in excluded_markers):
+        return False
+
+    image_repo = image.split(':', 1)[0]
+    name_tokens = {token for token in re.split(r'[^a-z0-9]+', name) if token}
+    image_tokens = {token for token in re.split(r'[^a-z0-9]+', image_repo) if token}
+    return (
+        image_repo == 'emby/embyserver'
+        or image_repo.endswith('/embyserver')
+        or image_repo.endswith('/emby')
+        or 'embyserver' in image_tokens
+        or 'embyserver' in name_tokens
+        or name_tokens == {'emby'}
+    )
 
 
 def _candidate_emby_urls(container):
@@ -136,6 +161,12 @@ def _candidate_emby_urls(container):
             ports.add(int(text))
     ips, _aliases = _container_network_values(container)
     return [f'http://{ip}:{port}' for ip in ips for port in sorted(ports)]
+
+
+def _container_label(container):
+    attrs = container.attrs or {}
+    image = str(((attrs.get('Config') or {}).get('Image')) or '').strip()
+    return f"{container.name or '<unknown>'} ({image or 'unknown image'})"
 
 
 def _public_server_id(base_url):
@@ -182,7 +213,8 @@ def _resolve_emby_container(client, base_url, api_key):
         return matched[0]
     if not direct and len(containers) == 1:
         return containers[0]
-    raise RuntimeError('无法从 Docker 中唯一定位已授权的 Emby 容器')
+    labels = ', '.join(_container_label(item) for item in containers) or 'none'
+    raise RuntimeError(f'无法从 Docker 中唯一定位已授权的 Emby 容器，候选容器: {labels}')
 
 
 def _resolve_plugins_path(container):
