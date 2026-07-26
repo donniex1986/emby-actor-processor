@@ -1809,6 +1809,13 @@ class MediaProcessor:
                     update_clauses.append(
                         "active_washing = CASE WHEN EXCLUDED.item_type = 'Movie' AND EXCLUDED.in_library IS TRUE THEN FALSE ELSE media_metadata.active_washing END"
                     )
+                elif col == 'official_rating_json':
+                    update_clauses.append(
+                        "official_rating_json = CASE "
+                        "WHEN NULLIF(BTRIM(COALESCE(EXCLUDED.official_rating_json->>'US', EXCLUDED.official_rating_json->>'us', '')), '') IS NULL "
+                        "AND NULLIF(BTRIM(COALESCE(media_metadata.official_rating_json->>'US', media_metadata.official_rating_json->>'us', '')), '') IS NOT NULL "
+                        "THEN media_metadata.official_rating_json ELSE EXCLUDED.official_rating_json END"
+                    )
                 else:
                     # 其他字段正常更新
                     update_clauses.append(f"{col} = EXCLUDED.{col}")

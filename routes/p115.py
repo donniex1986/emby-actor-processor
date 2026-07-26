@@ -1957,7 +1957,7 @@ def get_cached_mediainfo_by_sha1(sha1):
 
 
 def _cached_metadata_response(sha1):
-    from database.metadata_provider_db import load_emby_metadata, needs_metadata_backfill
+    from database.metadata_provider_db import load_emby_metadata
     from handler.p115_service import _extract_raw_ffprobe_identity
 
     sha1 = str(sha1 or '').strip().upper()
@@ -1968,18 +1968,6 @@ def _cached_metadata_response(sha1):
     media_type = str(identity.get('media_type') or '').strip().lower()
     if not tmdb_id or media_type not in {'movie', 'tv'}:
         return jsonify({"error": "metadata identity not found"}), 404
-
-    if needs_metadata_backfill(tmdb_id, media_type):
-        import task_manager
-        from tasks.media import task_backfill_single_media_metadata
-        task_manager.submit_task(
-            task_function=task_backfill_single_media_metadata,
-            task_name=f"补齐单项元数据: {tmdb_id}",
-            processor_type='media',
-            silent=True,
-            tmdb_id=tmdb_id,
-            media_type=media_type,
-        )
 
     requested_type = str(request.args.get('item_type') or ('Movie' if media_type == 'movie' else 'Series')).title()
     if requested_type not in {'Movie', 'Series', 'Season', 'Episode'}:

@@ -1918,6 +1918,83 @@ def task_backfill_single_media_metadata(processor, tmdb_id: str, media_type: str
         logger.error("单项媒体元数据补齐失败 %s/%s: %s", tmdb_id, item_type, exc, exc_info=True)
         task_manager.update_status_from_thread(-1, f"单项元数据补齐失败: {exc}")
 
+
+def task_backfill_media_metadata_batch(processor, targets: List[Dict[str, str]]):
+    """Backfill already-filtered roots with isolated processors and bounded TMDb concurrency."""
+    from core_processor import MediaProcessor
+
+    targets = list(targets or [])
+    if not targets:
+        task_manager.update_status_from_thread(100, "没有缺失元数据需要补齐。")
+        return
+
+    # Let Emby finish its refresh first, once for the whole selection.
+    time.sleep(5)
+
+    def _backfill(target):
+        tmdb_id = str(target['tmdb_id'])
+        media_type = target['media_type']
+        target_id = f"{media_type}/{tmdb_id}"
+        item_type = 'Series' if media_type == 'tv' else 'Movie'
+        if processor.is_stop_requested() or not needs_metadata_backfill(tmdb_id, media_type):
+            return target_id, 'skipped'
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT emby_item_ids_json FROM media_metadata
+                WHERE tmdb_id=%s AND item_type=%s AND in_library IS TRUE
+                LIMIT 1
+                """,
+                (tmdb_id, item_type),
+            )
+            row = cursor.fetchone()
+        item_ids = (row or {}).get('emby_item_ids_json') or []
+        if isinstance(item_ids, str):
+            item_ids = json.loads(item_ids)
+        emby_item_id = next((str(value) for value in item_ids if value), '')
+        if not emby_item_id:
+            return target_id, 'skipped'
+
+        # Do not share mutable processor caches between parallel media operations.
+        worker = MediaProcessor(processor.config, ai_translator=processor.ai_translator)
+        if worker.process_single_item(
+            emby_item_id,
+            force_full_update=True,
+            metadata_backfill_only=True,
+        ):
+            return target_id, 'completed'
+        return target_id, 'failed'
+
+    completed = failed = skipped = 0
+    failed_targets = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(targets))) as executor:
+        futures = {
+            executor.submit(_backfill, target): f"{target['media_type']}/{target['tmdb_id']}"
+            for target in targets
+        }
+        for index, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            target_id = futures[future]
+            try:
+                target_id, result = future.result()
+            except Exception as exc:
+                logger.error("元数据补齐子任务失败 %s: %s", target_id, exc, exc_info=True)
+                result = 'failed'
+            if result == 'completed':
+                completed += 1
+            elif result == 'failed':
+                failed += 1
+                failed_targets.append(target_id)
+            else:
+                skipped += 1
+            task_manager.update_status_from_thread(
+                int(index * 100 / len(targets)),
+                f"补齐缺失元数据 {index}/{len(targets)}（完成 {completed}，跳过 {skipped}，失败 {failed}）",
+            )
+    if failed:
+        raise RuntimeError(f"{failed} 项元数据补齐失败: {', '.join(failed_targets)}")
+    task_manager.update_status_from_thread(100, f"缺失元数据补齐完成：{completed} 项，跳过 {skipped} 项。")
+
 # --- 辅助函数：检查分级是否匹配 (带日志调试版) ---
 def _is_rating_match(item_name: str, item_rating: str, rating_filters: List[str]) -> bool:
     """

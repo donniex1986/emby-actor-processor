@@ -1637,63 +1637,174 @@ def trigger_emby_metadata_backfill():
     return jsonify({'ok': False, 'submitted': False, 'reason': 'etk_busy'}), 409
 
 
-@webhook_bp.route('/api/emby/metadata/backfill/item', methods=['POST'])
-def trigger_emby_item_metadata_backfill():
-    payload = request.get_json(silent=True) or {}
-    emby_item_id = str(payload.get('emby_item_id') or '').strip()
-    if not emby_item_id:
-        return jsonify({'ok': False, 'error': 'emby_item_id is required'}), 400
-
+def _resolve_missing_metadata_backfill_targets(emby_item_ids):
+    """Resolve Emby selections to unique root identities without contacting TMDb."""
+    identities = {}
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
             SELECT tmdb_id, item_type, parent_series_tmdb_id
             FROM media_metadata
-            WHERE in_library IS TRUE
-              AND EXISTS (
-                  SELECT 1
-                  FROM jsonb_array_elements_text(emby_item_ids_json) AS eid
-                  WHERE eid = %s
-              )
-            ORDER BY CASE WHEN item_type IN ('Movie', 'Series') THEN 0 ELSE 1 END
-            LIMIT 1
+            WHERE in_library IS TRUE AND emby_item_ids_json ?| %s
             """,
-            (emby_item_id,),
+            (emby_item_ids,),
         )
-        row = cursor.fetchone()
-    if not row:
-        return jsonify({'ok': False, 'error': 'metadata identity not found'}), 404
+        for row in cursor.fetchall():
+            if row['item_type'] == 'Movie':
+                tmdb_id, media_type = row['tmdb_id'], 'movie'
+            else:
+                tmdb_id, media_type = row.get('parent_series_tmdb_id') or row['tmdb_id'], 'tv'
+            if tmdb_id:
+                identities[(str(tmdb_id), media_type)] = {
+                    'tmdb_id': str(tmdb_id),
+                    'media_type': media_type,
+                }
+    from database.metadata_provider_db import needs_metadata_backfill
+    return [
+        target for target in identities.values()
+        if needs_metadata_backfill(target['tmdb_id'], target['media_type'])
+    ]
 
-    if row['item_type'] == 'Movie':
-        tmdb_id, media_type = row['tmdb_id'], 'movie'
-    else:
-        tmdb_id, media_type = row.get('parent_series_tmdb_id') or row['tmdb_id'], 'tv'
-    if not tmdb_id:
-        return jsonify({'ok': False, 'error': 'metadata identity not found'}), 404
 
-    now = time.monotonic()
-    with EMBY_METADATA_BACKFILL_RECENT_LOCK:
-        for item_id, requested_at in list(EMBY_METADATA_BACKFILL_RECENT.items()):
-            if now - requested_at >= EMBY_METADATA_BACKFILL_DEBOUNCE_SECONDS:
-                EMBY_METADATA_BACKFILL_RECENT.pop(item_id, None)
-        if emby_item_id in EMBY_METADATA_BACKFILL_RECENT:
-            return jsonify({'ok': True, 'submitted': False, 'reason': 'recently_requested'}), 200
-        EMBY_METADATA_BACKFILL_RECENT[emby_item_id] = now
+def _resolve_library_missing_metadata_backfill_targets(emby_library_id):
+    """Resolve missing root metadata within one Emby library from local assets."""
+    from database.metadata_provider_db import MEDIA_METADATA_SCHEMA_VERSION
 
-    from tasks.media import task_backfill_single_media_metadata
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT root.tmdb_id, root.item_type
+            FROM media_metadata root
+            WHERE root.in_library IS TRUE
+              AND root.item_type IN ('Movie', 'Series')
+              AND (
+                  root.metadata_schema_version < %s
+                  OR NULLIF(BTRIM(root.title), '') IS NULL
+                  OR NULLIF(BTRIM(root.overview), '') IS NULL
+                  OR root.release_year IS NULL
+                  OR NULLIF(BTRIM(COALESCE(
+                      root.official_rating_json->>'US',
+                      root.official_rating_json->>'us',
+                      '')), '') IS NULL
+                  OR root.genres_json IS NULL
+                  OR root.genres_json = '[]'::jsonb
+                  OR (
+                      root.item_type = 'Series'
+                      AND EXISTS (
+                          SELECT 1 FROM media_metadata special
+                          WHERE special.parent_series_tmdb_id = root.tmdb_id
+                            AND special.item_type = 'Episode'
+                            AND special.in_library IS TRUE
+                            AND special.season_number = 0
+                            AND special.tmdb_id LIKE root.tmdb_id || '-S0E%%'
+                      )
+                  )
+              )
+              AND (
+                  EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(COALESCE(
+                          root.asset_details_json, '[]'::jsonb)) asset
+                      WHERE asset->>'source_library_id' = %s
+                  )
+                  OR (
+                      root.item_type = 'Series'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM media_metadata episode
+                          WHERE episode.parent_series_tmdb_id = root.tmdb_id
+                            AND episode.item_type = 'Episode'
+                            AND episode.in_library IS TRUE
+                            AND EXISTS (
+                                SELECT 1
+                                FROM jsonb_array_elements(COALESCE(
+                                    episode.asset_details_json, '[]'::jsonb)) asset
+                                WHERE asset->>'source_library_id' = %s
+                            )
+                      )
+                  )
+              )
+            """,
+            (
+                MEDIA_METADATA_SCHEMA_VERSION,
+                str(emby_library_id),
+                str(emby_library_id),
+            ),
+        )
+        return [
+            {
+                'tmdb_id': str(row['tmdb_id']),
+                'media_type': 'tv' if row['item_type'] == 'Series' else 'movie',
+            }
+            for row in cursor.fetchall()
+            if row.get('tmdb_id')
+        ]
 
-    submitted = _submit_webhook_media_task(
-        f"补齐单项元数据: {tmdb_id}",
-        task_function=task_backfill_single_media_metadata,
+
+def _trigger_emby_metadata_backfill(emby_item_ids):
+    targets = _resolve_missing_metadata_backfill_targets(emby_item_ids)
+    if not targets:
+        return jsonify({'ok': True, 'submitted': False, 'reason': 'metadata_complete'}), 200
+
+    from tasks.media import task_backfill_media_metadata_batch
+    submitted = task_manager.submit_task(
+        task_function=task_backfill_media_metadata_batch,
+        task_name=f"补齐缺失元数据 ({len(targets)} 项)",
         processor_type='media',
         silent=True,
-        tmdb_id=str(tmdb_id),
-        media_type=media_type,
+        targets=targets,
     )
     if submitted:
-        return jsonify({'ok': True, 'submitted': True, 'tmdb_id': str(tmdb_id)}), 202
-    return jsonify({'ok': True, 'submitted': False, 'queued': True, 'tmdb_id': str(tmdb_id)}), 202
+        return jsonify({'ok': True, 'submitted': True, 'count': len(targets)}), 202
+    return jsonify({'ok': False, 'submitted': False, 'reason': 'etk_busy'}), 409
+
+
+@webhook_bp.route('/api/emby/metadata/backfill/item', methods=['POST'])
+def trigger_emby_item_metadata_backfill():
+    emby_item_id = str((request.get_json(silent=True) or {}).get('emby_item_id') or '').strip()
+    if not emby_item_id:
+        return jsonify({'ok': False, 'error': 'emby_item_id is required'}), 400
+    return _trigger_emby_metadata_backfill([emby_item_id])
+
+
+@webhook_bp.route('/api/emby/metadata/backfill/items', methods=['POST'])
+def trigger_emby_items_metadata_backfill():
+    values = (request.get_json(silent=True) or {}).get('emby_item_ids') or []
+    item_ids = list(dict.fromkeys(
+        str(value).strip() for value in values if str(value or '').strip()
+    ))
+    if not item_ids:
+        return jsonify({'ok': False, 'error': 'emby_item_ids is required'}), 400
+    return _trigger_emby_metadata_backfill(item_ids)
+
+
+@webhook_bp.route('/api/emby/metadata/backfill/library', methods=['POST'])
+def trigger_emby_library_metadata_backfill():
+    data = request.get_json(silent=True) or {}
+    library_id = str(data.get('emby_library_id') or '').strip()
+    refresh_mode = str(data.get('refresh_mode') or '').strip().lower()
+    if not library_id.isdigit():
+        return jsonify({'ok': False, 'error': 'emby_library_id is required'}), 400
+    if refresh_mode != 'missing_metadata':
+        return jsonify({'ok': False, 'error': 'unsupported refresh_mode'}), 400
+
+    targets = _resolve_library_missing_metadata_backfill_targets(library_id)
+    if not targets:
+        return jsonify({'ok': True, 'submitted': False, 'reason': 'metadata_complete'}), 200
+
+    from tasks.media import task_backfill_media_metadata_batch
+    submitted = task_manager.submit_task(
+        task_function=task_backfill_media_metadata_batch,
+        task_name=f"补齐缺失元数据 (媒体库 {library_id}，{len(targets)} 项)",
+        processor_type='media',
+        silent=True,
+        targets=targets,
+    )
+    if submitted:
+        return jsonify({'ok': True, 'submitted': True, 'count': len(targets)}), 202
+    return jsonify({'ok': False, 'submitted': False, 'reason': 'etk_busy'}), 409
 
 
 @webhook_bp.route('/api/emby/intro-detection/backfill', methods=['POST'])

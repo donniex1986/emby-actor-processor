@@ -2441,13 +2441,14 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
         try:
             raw_rating = db_row['official_rating_json']
             ratings_map = json.loads(raw_rating) if isinstance(raw_rating, str) else raw_rating
-            
-            # ★★★ 核心修复：严格只取映射后的 US 分级。绝不拿其他国家的原始分级兜底 ★★★
-            rating_val = ratings_map.get('US')
-            
-            if rating_val:
-                payload['mpaa'] = rating_val
-                payload['certification'] = rating_val
+            if isinstance(ratings_map, dict):
+                payload['_official_rating_map'] = dict(ratings_map)
+
+                # 严格只取映射后的 US 分级，不拿其他国家的原始分级兜底。
+                rating_val = ratings_map.get('US') or ratings_map.get('us')
+                if rating_val:
+                    payload['mpaa'] = rating_val
+                    payload['certification'] = rating_val
         except Exception: pass
 
     return payload
