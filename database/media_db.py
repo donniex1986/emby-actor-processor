@@ -752,18 +752,19 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
                     )
                     ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                         parent_series_tmdb_id = EXCLUDED.parent_series_tmdb_id,
-                        title = EXCLUDED.title,
-                        overview = EXCLUDED.overview,
-                        release_date = EXCLUDED.release_date,
-                        poster_path = EXCLUDED.poster_path,
+                        title = COALESCE(NULLIF(EXCLUDED.title, ''), media_metadata.title),
+                        overview = COALESCE(NULLIF(EXCLUDED.overview, ''), media_metadata.overview),
+                        release_date = COALESCE(EXCLUDED.release_date, media_metadata.release_date),
+                        poster_path = COALESCE(NULLIF(EXCLUDED.poster_path, ''), media_metadata.poster_path),
                         season_number = EXCLUDED.season_number,
                         episode_number = EXCLUDED.episode_number,
                         in_library = EXCLUDED.in_library,
                         
                         -- ★★★ 核心逻辑：如果已锁定，则保持原值；否则更新为新值 ★★★
-                        total_episodes = CASE 
+                        total_episodes = CASE
                             WHEN media_metadata.total_episodes_locked = TRUE THEN media_metadata.total_episodes
-                            ELSE EXCLUDED.total_episodes
+                            WHEN EXCLUDED.total_episodes > 0 THEN EXCLUDED.total_episodes
+                            ELSE media_metadata.total_episodes
                         END,
                         
                         last_synced_at = NOW();

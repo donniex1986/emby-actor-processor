@@ -672,7 +672,7 @@ class WatchlistProcessor:
         """
         智能追剧刷新后强制校准分集 runtime_minutes：
         - media_metadata.runtime_minutes 只保存 TMDb episode.runtime；
-        - TMDb 没有 runtime 时写 NULL；
+        - TMDb 未返回 runtime 时保留已有值；
         - 本地物理/Emby 时长只允许留在 asset_details_json[*].runtime_minutes。
         """
         runtime_by_key = {}
@@ -684,22 +684,13 @@ class WatchlistProcessor:
                 e_num = int(ep.get('episode_number'))
             except Exception:
                 continue
-            runtime_by_key[(s_num, e_num)] = self._normalize_tmdb_runtime_minutes(ep.get('runtime'))
+            runtime_minutes = self._normalize_tmdb_runtime_minutes(ep.get('runtime'))
+            if runtime_minutes is not None:
+                runtime_by_key[(s_num, e_num)] = runtime_minutes
 
         try:
             with connection.get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute(
-                        """
-                        UPDATE media_metadata
-                        SET runtime_minutes = NULL,
-                            last_updated_at = NOW()
-                        WHERE parent_series_tmdb_id = %s
-                          AND item_type = 'Episode'
-                        """,
-                        (str(parent_tmdb_id),),
-                    )
-
                     for (s_num, e_num), runtime_minutes in runtime_by_key.items():
                         cursor.execute(
                             """
@@ -718,7 +709,7 @@ class WatchlistProcessor:
 
             logger.debug(
                 f"  ➜ [智能追剧] 已校准 {len(runtime_by_key)} 集 TMDb runtime_minutes；"
-                "TMDb 缺失时保持为空，物理时长仅保存在 asset_details_json。"
+                "TMDb 未返回 runtime 的分集保留已有值，物理时长仅保存在 asset_details_json。"
             )
         except Exception as e:
             logger.warning(f"  ➜ [智能追剧] 校准分集 TMDb runtime_minutes 失败: {e}")
@@ -1260,7 +1251,10 @@ class WatchlistProcessor:
                         cursor.executemany(
                             """
                             UPDATE media_metadata
-                            SET poster_path=%s, overview=%s, rating=%s, last_updated_at=NOW()
+                            SET poster_path=COALESCE(%s, poster_path),
+                                overview=COALESCE(%s, overview),
+                                rating=COALESCE(%s, rating),
+                                last_updated_at=NOW()
                             WHERE parent_series_tmdb_id=%s AND item_type='Episode'
                               AND season_number=%s AND episode_number=%s
                             """,
@@ -1377,27 +1371,37 @@ class WatchlistProcessor:
         top_directors = helpers.extract_top_directors(latest_series_data, max_count=3)
         directors = [{'id': d['id'], 'name': d['name']} for d in top_directors]
 
+        rating = latest_series_data.get("vote_average")
+        try:
+            rating = rating if float(rating) > 0 else None
+        except (TypeError, ValueError):
+            rating = None
+
         # 构造更新字典
         series_updates = {
             "original_title": latest_series_data.get("original_name"),
             "overview": latest_series_data.get("overview"),
             "poster_path": latest_series_data.get("poster_path"),
             "release_date": latest_series_data.get("first_air_date") or None,
-            "release_year": int(latest_series_data.get("first_air_date")[:4]) if latest_series_data.get("first_air_date") else None,
+            "release_year": self._watchlist_release_year(latest_series_data.get("first_air_date")),
             "original_language": latest_series_data.get("original_language"),
             "watchlist_tmdb_status": latest_series_data.get("status"),
-            "total_episodes": latest_series_data.get("number_of_episodes", 0),
-            "rating": latest_series_data.get("vote_average"),
+            "total_episodes": latest_series_data.get("number_of_episodes") or None,
+            "rating": rating,
             "official_rating_json": json.dumps(official_rating_json) if official_rating_json else None,
             "genres_json": json.dumps(genres_list) if genres_list else None,
             "keywords_json": json.dumps(keywords_json) if keywords_json else None,
             "production_companies_json": json.dumps(production_companies_json) if production_companies_json else None,
             "networks_json": json.dumps(networks_json) if networks_json else None,
             "countries_json": json.dumps(countries_json) if countries_json else None,
-            "directors_json": json.dumps(directors, ensure_ascii=False),
+            "directors_json": json.dumps(directors, ensure_ascii=False) if directors else None,
             "imdb_id": latest_series_data.get("external_ids", {}).get("imdb_id")
         }
         
+        series_updates = {
+            key: value for key, value in series_updates.items()
+            if value not in (None, '', '[]', '{}')
+        }
         watchlist_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
         logger.debug(f"  ➜ 已全量刷新 '{item_name}' 的 Series 元数据。")
 
