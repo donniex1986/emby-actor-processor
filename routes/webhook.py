@@ -1634,6 +1634,59 @@ def trigger_emby_metadata_backfill():
     return jsonify({'ok': False, 'submitted': False, 'reason': 'etk_busy'}), 409
 
 
+@webhook_bp.route('/api/emby/metadata/backfill/item', methods=['POST'])
+def trigger_emby_item_metadata_backfill():
+    payload = request.get_json(silent=True) or {}
+    emby_item_id = str(payload.get('emby_item_id') or '').strip()
+    if not emby_item_id:
+        return jsonify({'ok': False, 'error': 'emby_item_id is required'}), 400
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT tmdb_id, item_type, parent_series_tmdb_id
+            FROM media_metadata
+            WHERE in_library IS TRUE
+              AND EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements_text(emby_item_ids_json) AS eid
+                  WHERE eid = %s
+              )
+            ORDER BY CASE WHEN item_type IN ('Movie', 'Series') THEN 0 ELSE 1 END
+            LIMIT 1
+            """,
+            (emby_item_id,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        return jsonify({'ok': False, 'error': 'metadata identity not found'}), 404
+
+    if row['item_type'] == 'Movie':
+        tmdb_id, media_type = row['tmdb_id'], 'movie'
+    else:
+        tmdb_id, media_type = row.get('parent_series_tmdb_id') or row['tmdb_id'], 'tv'
+    if not tmdb_id:
+        return jsonify({'ok': False, 'error': 'metadata identity not found'}), 404
+
+    from tasks.media import task_backfill_single_media_metadata
+
+    submitted = task_manager.submit_task(
+        task_function=task_backfill_single_media_metadata,
+        task_name=f"补齐单项元数据: {tmdb_id}",
+        processor_type='media',
+        silent=True,
+        tmdb_id=str(tmdb_id),
+        media_type=media_type,
+    )
+    if submitted:
+        return jsonify({'ok': True, 'submitted': True, 'tmdb_id': str(tmdb_id)}), 202
+    status = task_manager.get_task_status()
+    if status.get('is_running') and status.get('current_action') == f"补齐单项元数据: {tmdb_id}":
+        return jsonify({'ok': True, 'submitted': False, 'reason': 'task_already_running'}), 200
+    return jsonify({'ok': False, 'submitted': False, 'reason': 'etk_busy'}), 409
+
+
 @webhook_bp.route('/api/emby/intro-detection/backfill', methods=['POST'])
 def trigger_emby_intro_detection_backfill():
     """Queue the opt-in active-watch intro fallback from the bridge task."""
