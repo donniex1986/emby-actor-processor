@@ -2812,6 +2812,7 @@ class MediaProcessor:
                     user_id_for_ops=self.emby_user_id,
                     replace_all_metadata_param=uses_etk_metadata_provider,
                     replace_all_images_param=False,
+                    metadata_only=metadata_backfill_only,
                     item_name_for_log=item_name_for_log
                 )
                 restore_target_ids = [item_id]

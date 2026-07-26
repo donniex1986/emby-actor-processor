@@ -1408,6 +1408,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
                                user_id_for_ops: str,
                                replace_all_metadata_param: bool = False,
                                replace_all_images_param: bool = False,
+                               metadata_only: bool = False,
                                item_name_for_log: Optional[str] = None
                                ) -> bool:
     if not all([item_emby_id, emby_server_url, emby_api_key, user_id_for_ops]):
@@ -1432,7 +1433,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
         "api_key": emby_api_key,
         "Recursive": str(is_series).lower(),
         "MetadataRefreshMode": "FullRefresh",
-        "ImageRefreshMode": "FullRefresh",
+        "ImageRefreshMode": "ValidationOnly" if metadata_only else "FullRefresh",
         "ReplaceAllMetadata": str(replace_all_metadata_param).lower(),
         "ReplaceAllImages": str(replace_all_images_param).lower()
     }
