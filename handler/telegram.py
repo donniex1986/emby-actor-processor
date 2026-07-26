@@ -361,18 +361,7 @@ def _notice_asset_size(asset: dict) -> int:
 
 
 def _notice_asset_resolution(asset: dict) -> str:
-    resolution = _notice_asset_value(asset, 'resolution_display')
-    width = (asset or {}).get('width')
-    height = (asset or {}).get('height')
-    try:
-        width = int(width or 0)
-        height = int(height or 0)
-    except Exception:
-        width, height = 0, 0
-    dimension = f"{width}x{height}" if width and height else ''
-    if resolution and dimension and dimension not in resolution:
-        return f"{resolution} / {dimension}"
-    return resolution or dimension
+    return _notice_asset_value(asset, 'resolution_display')
 
 
 def _notice_join_unique(values, limit: int = 4) -> str:
