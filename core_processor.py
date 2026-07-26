@@ -2400,7 +2400,7 @@ class MediaProcessor:
             update_status_callback(100, "全量处理完成")
     
     # --- 核心处理总管 ---
-    def process_single_item(self, emby_item_id: str, force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None, media_info_only: bool = False):
+    def process_single_item(self, emby_item_id: str, force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None, media_info_only: bool = False, metadata_backfill_only: bool = False):
         """
         入口函数，它会先检查是否需要跳过已处理的项目。
 
@@ -2449,11 +2449,12 @@ class MediaProcessor:
             item_details_from_emby=item_details,
             force_full_update=force_full_update,
             specific_episode_ids=specific_episode_ids,
-            media_info_only=media_info_only
+            media_info_only=media_info_only,
+            metadata_backfill_only=metadata_backfill_only,
         )
 
     # ---核心处理流程 ---
-    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None, media_info_only: bool = False):
+    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None, media_info_only: bool = False, metadata_backfill_only: bool = False):
         """
         【V3 极简架构版】
         - 未命中缓存/强制刷新：执行完整的 TMDb -> AI翻译 -> 演员处理 -> 数据库写入。
@@ -2480,6 +2481,10 @@ class MediaProcessor:
             using_cached_metadata = False
             formatted_metadata = None
             final_processed_cast = None
+            cached_metadata_cast = None
+            if metadata_backfill_only:
+                _, cached_metadata_cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
+                logger.info("  ➜ [元数据补齐] 复用数据库演员表，跳过演员翻译和人物同步。")
 
             def _limit_cached_cast(cast_list):
                 try:
@@ -2591,10 +2596,10 @@ class MediaProcessor:
                 authoritative_cast_source = []
                 credits_source = None
 
-                if item_type == "Movie":
+                if not metadata_backfill_only and item_type == "Movie":
                     credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
                     authoritative_cast_source = credits_source.get('cast', [])
-                elif item_type == "Series":
+                elif not metadata_backfill_only and item_type == "Series":
                     series_cast_source = (
                         (aggregated_tmdb_data or {}).get("series_details")
                         if aggregated_tmdb_data else fresh_data
@@ -2603,7 +2608,7 @@ class MediaProcessor:
 
                 # 先拿豆瓣，再把豆瓣角色预合并进 TMDb 演员表
                 douban_cast_raw = []
-                if self._should_fetch_douban_cast_before_translation(authoritative_cast_source):
+                if not metadata_backfill_only and self._should_fetch_douban_cast_before_translation(authoritative_cast_source):
                     douban_cast_raw, _ = self._fetch_douban_cast_data(item_details_from_emby, fresh_data)
                     authoritative_cast_source = self._premerge_douban_roles_into_tmdb_cast(
                         authoritative_cast_source,
@@ -2623,7 +2628,7 @@ class MediaProcessor:
                         fresh_data["aggregate_credits"]["cast"] = authoritative_cast_source
 
                 # ★★★ 大一统 AI 翻译引擎 (现在是在豆瓣预合并之后执行) ★★★
-                if self.ai_translator:
+                if self.ai_translator and not metadata_backfill_only:
                     target_tmdb_data = aggregated_tmdb_data if item_type == "Series" else fresh_data
                     
                     translate_tmdb_metadata_recursively(
@@ -2655,10 +2660,10 @@ class MediaProcessor:
                     item_details_from_emby["Genres"] = fresh_data.get("genres")
 
                 # 翻译后重新取一次演员源数据，确保角色名拿到的是翻译后的最终值
-                if item_type == "Movie":
+                if not metadata_backfill_only and item_type == "Movie":
                     credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
                     authoritative_cast_source = credits_source.get('cast', [])
-                elif item_type == "Series":
+                elif not metadata_backfill_only and item_type == "Series":
                     series_cast_source = (
                         (aggregated_tmdb_data or {}).get("series_details")
                         if aggregated_tmdb_data else fresh_data
@@ -2674,22 +2679,32 @@ class MediaProcessor:
                     all_emby_people = item_details_from_emby.get("People", [])
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
                     emby_config = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
-                    enriched_emby_cast = self.actor_db_manager.enrich_actors_with_provider_ids(cursor, current_emby_cast_raw, emby_config)
+                    enriched_emby_cast = (
+                        []
+                        if metadata_backfill_only
+                        else self.actor_db_manager.enrich_actors_with_provider_ids(
+                            cursor, current_emby_cast_raw, emby_config
+                        )
+                    )
 
-                    final_processed_cast = self._process_cast_list(
-                        tmdb_cast_people=authoritative_cast_source,
-                        emby_cast_people=enriched_emby_cast,
-                        douban_cast_list=douban_cast_raw,
-                        item_details_from_emby=item_details_from_emby,
-                        cursor=cursor,
-                        tmdb_api_key=self.tmdb_api_key,
-                        stop_event=self.get_stop_event()
+                    final_processed_cast = (
+                        _limit_cached_cast(cached_metadata_cast)
+                        if metadata_backfill_only
+                        else self._process_cast_list(
+                            tmdb_cast_people=authoritative_cast_source,
+                            emby_cast_people=enriched_emby_cast,
+                            douban_cast_list=douban_cast_raw,
+                            item_details_from_emby=item_details_from_emby,
+                            cursor=cursor,
+                            tmdb_api_key=self.tmdb_api_key,
+                            stop_event=self.get_stop_event()
+                        )
                     )
                     
                     # ★★★ 新增：将核心导演也写入 person_metadata 单表 ★★★
                     try:
                         from tasks.helpers import extract_top_directors
-                        top_directors = extract_top_directors(fresh_data, max_count=3)
+                        top_directors = [] if metadata_backfill_only else extract_top_directors(fresh_data, max_count=3)
                         for director in top_directors:
                             if director.get('id'):
                                 director_data = {

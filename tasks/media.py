@@ -1907,7 +1907,11 @@ def task_backfill_single_media_metadata(processor, tmdb_id: str, media_type: str
 
         time.sleep(5)
         task_manager.update_status_from_thread(20, f"正在补齐 {item_type} TMDb:{tmdb_id}...")
-        if not processor.process_single_item(emby_item_id, force_full_update=True):
+        if not processor.process_single_item(
+            emby_item_id,
+            force_full_update=True,
+            metadata_backfill_only=True,
+        ):
             raise RuntimeError("完整元数据处理失败")
         task_manager.update_status_from_thread(100, f"已补齐 {item_type} TMDb:{tmdb_id}。")
     except Exception as exc:
