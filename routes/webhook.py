@@ -51,6 +51,9 @@ WEBHOOK_REQUEUE_DELAY = 5
 WEBHOOK_PENDING_TASKS = collections.deque()
 WEBHOOK_PENDING_TASKS_LOCK = threading.Lock()
 WEBHOOK_PENDING_TASKS_DRAINER = None
+EMBY_METADATA_BACKFILL_DEBOUNCE_SECONDS = 120
+EMBY_METADATA_BACKFILL_RECENT = {}
+EMBY_METADATA_BACKFILL_RECENT_LOCK = threading.Lock()
 
 UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
@@ -1669,11 +1672,20 @@ def trigger_emby_item_metadata_backfill():
     if not tmdb_id:
         return jsonify({'ok': False, 'error': 'metadata identity not found'}), 404
 
+    now = time.monotonic()
+    with EMBY_METADATA_BACKFILL_RECENT_LOCK:
+        for item_id, requested_at in list(EMBY_METADATA_BACKFILL_RECENT.items()):
+            if now - requested_at >= EMBY_METADATA_BACKFILL_DEBOUNCE_SECONDS:
+                EMBY_METADATA_BACKFILL_RECENT.pop(item_id, None)
+        if emby_item_id in EMBY_METADATA_BACKFILL_RECENT:
+            return jsonify({'ok': True, 'submitted': False, 'reason': 'recently_requested'}), 200
+        EMBY_METADATA_BACKFILL_RECENT[emby_item_id] = now
+
     from tasks.media import task_backfill_single_media_metadata
 
-    submitted = task_manager.submit_task(
+    submitted = _submit_webhook_media_task(
+        f"补齐单项元数据: {tmdb_id}",
         task_function=task_backfill_single_media_metadata,
-        task_name=f"补齐单项元数据: {tmdb_id}",
         processor_type='media',
         silent=True,
         tmdb_id=str(tmdb_id),
@@ -1681,10 +1693,7 @@ def trigger_emby_item_metadata_backfill():
     )
     if submitted:
         return jsonify({'ok': True, 'submitted': True, 'tmdb_id': str(tmdb_id)}), 202
-    status = task_manager.get_task_status()
-    if status.get('is_running') and status.get('current_action') == f"补齐单项元数据: {tmdb_id}":
-        return jsonify({'ok': True, 'submitted': False, 'reason': 'task_already_running'}), 200
-    return jsonify({'ok': False, 'submitted': False, 'reason': 'etk_busy'}), 409
+    return jsonify({'ok': True, 'submitted': False, 'queued': True, 'tmdb_id': str(tmdb_id)}), 202
 
 
 @webhook_bp.route('/api/emby/intro-detection/backfill', methods=['POST'])
