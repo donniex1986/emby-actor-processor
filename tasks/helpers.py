@@ -1888,6 +1888,9 @@ def process_subscription_items_and_update_db(
         """复用正式入库的扁平化字段；Season 继承父剧集非人物元数据。"""
         source_details = parent_details if item_type == 'Season' and parent_details else details
         payload = construct_metadata_payload('Series' if item_type == 'Season' else item_type, source_details or {})
+        preference = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
+        priorities = build_image_language_priority(source_details.get('original_language'), preference)
+        images = source_details.get('images') or {}
         if item_type == 'Season':
             payload.update({
                 'name': details.get('name'),
@@ -1899,7 +1902,10 @@ def process_subscription_items_and_update_db(
         credits = payload.get('casts') or {}
         directors = [d for d in credits.get('crew', []) if d.get('job') in ('Director', 'Series Director')]
         countries = payload.get('production_countries') or payload.get('origin_country') or []
+        release_date = details.get('air_date') or details.get('release_date') or details.get('first_air_date')
+        release_year = int(str(release_date)[:4]) if release_date and str(release_date)[:4].isdigit() else None
         return {
+            'release_year': release_year,
             'original_language': source_details.get('original_language'),
             'tagline': payload.get('tagline'), 'homepage': payload.get('homepage'),
             'runtime_minutes': payload.get('runtime'), 'rating': payload.get('vote_average'),
@@ -1910,6 +1916,9 @@ def process_subscription_items_and_update_db(
             'countries_json': [c.get('iso_3166_1') if isinstance(c, dict) else c for c in countries],
             'keywords_json': payload.get('keywords') or [], 'last_air_date': source_details.get('last_air_date'),
             'total_episodes': payload.get('number_of_episodes') or 0,
+            'logo_path': select_image_path(images.get('logos'), priorities),
+            'thumb_path': select_image_path(images.get('backdrops'), priorities) or source_details.get('backdrop_path'),
+            'watchlist_tmdb_status': source_details.get('status'),
         }
 
     # 用于记录本次真正处理过的 ID (返回给调用方用于清理)
@@ -2037,6 +2046,7 @@ def process_subscription_items_and_update_db(
                 'tmdb_id': target_db_id, # 这里存入的是 季ID 或 电影ID
                 'item_type': item_type_for_db, # 这里是 'Season' 或 'Movie'
                 'title': details.get('name') or details.get('title'),
+                'original_title': details.get('original_name') or details.get('original_title'),
                 'release_date': release_date,
                 'release_year': release_year, 
                 'overview': details.get('overview'),
