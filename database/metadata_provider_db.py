@@ -943,8 +943,7 @@ def load_emby_metadata(
                         })
 
     official_ratings = _json_value(row.get("official_rating_json"), {})
-    custom_rating = str(row.get("custom_rating") or "").strip()
-    rating = custom_rating or official_ratings.get("US")
+    rating = official_ratings.get("US")
     tags, studios = _provider_tags_and_studios(row)
     screenshot_url = None
     if requested_type == "Episode" and not row.get("poster_path") and row.get("screenshot_hash"):
@@ -964,6 +963,7 @@ def load_emby_metadata(
         "production_year": row.get("release_year"),
         "community_rating": row.get("rating"),
         "official_rating": rating,
+        "custom_rating": row.get("custom_rating"),
         "runtime_minutes": row.get("runtime_minutes"),
         "genres": [item.get("name") if isinstance(item, dict) else item for item in _json_value(row.get("genres_json"), [])],
         "tags": tags,
