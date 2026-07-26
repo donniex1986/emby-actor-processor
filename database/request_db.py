@@ -57,6 +57,51 @@ def _prepare_media_data_for_upsert(
         })
     return data_to_upsert
 
+
+def update_media_metadata_details(media_info_list: Optional[List[Dict[str, Any]]] = None):
+    """补齐订阅占位条目的正式元数据；刻意不触碰 actors_json/actors_ready。"""
+    if not media_info_list:
+        return
+    fields = (
+        "original_language", "tagline", "homepage", "runtime_minutes", "rating", "imdb_id",
+        "official_rating_json", "genres_json", "directors_json", "production_companies_json",
+        "networks_json", "countries_json", "keywords_json", "last_air_date", "total_episodes",
+    )
+    rows = []
+    for info in media_info_list:
+        if not info.get("tmdb_id") or not info.get("item_type"):
+            continue
+        row = {"tmdb_id": info["tmdb_id"], "item_type": info["item_type"]}
+        for field in fields:
+            value = info.get(field)
+            if field.endswith("_json") and value is not None:
+                value = json.dumps(value, ensure_ascii=False)
+            row[field] = value
+        rows.append(row)
+    if not rows:
+        return
+    from psycopg2.extras import execute_batch
+    # JSONB 参数使用显式转换；普通字段保持数据库原类型的参数转换。
+    assignments = ", ".join(
+        f"{field} = COALESCE(%({field})s::{ 'jsonb' if field.endswith('_json') else 'text' }, media_metadata.{field})"
+        if field.endswith("_json") else f"{field} = COALESCE(%({field})s, media_metadata.{field})"
+        for field in fields
+    )
+    sql = f"""
+        UPDATE media_metadata
+        SET {assignments}, metadata_ready = TRUE, metadata_schema_version = 1,
+            last_updated_at = NOW()
+        WHERE tmdb_id = %(tmdb_id)s AND item_type = %(item_type)s
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                execute_batch(cursor, sql, rows)
+            conn.commit()
+    except Exception as e:
+        logger.error("补齐订阅占位元数据失败: %s", e, exc_info=True)
+        raise
+
 def set_media_status_requested(
     tmdb_ids: Union[str, List[str]], 
     item_type: str, 

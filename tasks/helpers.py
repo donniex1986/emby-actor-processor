@@ -1884,6 +1884,34 @@ def process_subscription_items_and_update_db(
     today_str = datetime.now().strftime('%Y-%m-%d')
     parent_series_cache = {} 
 
+    def _metadata_for_placeholder(item_type: str, details: Dict[str, Any], parent_details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """复用正式入库的扁平化字段；Season 继承父剧集非人物元数据。"""
+        source_details = parent_details if item_type == 'Season' and parent_details else details
+        payload = construct_metadata_payload('Series' if item_type == 'Season' else item_type, source_details or {})
+        if item_type == 'Season':
+            payload.update({
+                'name': details.get('name'),
+                'overview': details.get('overview') or payload.get('overview'),
+                'first_air_date': details.get('air_date') or payload.get('first_air_date'),
+                'poster_path': details.get('poster_path') or payload.get('poster_path'),
+                'number_of_episodes': details.get('episode_count') or 0,
+            })
+        credits = payload.get('casts') or {}
+        directors = [d for d in credits.get('crew', []) if d.get('job') in ('Director', 'Series Director')]
+        countries = payload.get('production_countries') or payload.get('origin_country') or []
+        return {
+            'original_language': source_details.get('original_language'),
+            'tagline': payload.get('tagline'), 'homepage': payload.get('homepage'),
+            'runtime_minutes': payload.get('runtime'), 'rating': payload.get('vote_average'),
+            'imdb_id': payload.get('imdb_id'), 'official_rating_json': payload.get('_official_rating_map') or {},
+            'genres_json': payload.get('genres') or [], 'directors_json': directors or payload.get('created_by') or [],
+            'production_companies_json': payload.get('production_companies') or [],
+            'networks_json': payload.get('networks') or [],
+            'countries_json': [c.get('iso_3166_1') if isinstance(c, dict) else c for c in countries],
+            'keywords_json': payload.get('keywords') or [], 'last_air_date': source_details.get('last_air_date'),
+            'total_episodes': payload.get('number_of_episodes') or 0,
+        }
+
     # 用于记录本次真正处理过的 ID (返回给调用方用于清理)
     processed_active_ids = set()
 
@@ -1953,6 +1981,7 @@ def process_subscription_items_and_update_db(
                     'backdrop_path': parent_details.get('backdrop_path'),
                     'overview': parent_details.get('overview')
                 }
+                parent_series_to_ensure_exist[parent_id].update(_metadata_for_placeholder('Series', parent_details))
 
                 # 3. 获取季详情
                 details = _get_subscription_season_details(
@@ -2017,6 +2046,9 @@ def process_subscription_items_and_update_db(
                 'season_number': details.get('season_number'),
                 'source': subscription_source # 直接使用传入的 source
             }
+            item_details_for_db.update(_metadata_for_placeholder(
+                item_type_for_db, details, parent_details if item_type_for_db == 'Season' else None
+            ))
             
             if item_type_for_db == 'Season':
                 item_details_for_db['title'] = details.get('name') or f"第 {season_num} 季"
@@ -2040,6 +2072,7 @@ def process_subscription_items_and_update_db(
             item_type='Series',
             media_info_list=list(parent_series_to_ensure_exist.values())
         )
+        request_db.update_media_metadata_details(list(parent_series_to_ensure_exist.values()))
 
     def group_and_update(items_list, status):
         if not items_list: return
@@ -2058,6 +2091,7 @@ def process_subscription_items_and_update_db(
                 request_db.set_media_status_subscribed(ids, itype, media_info_list=requests, source=subscription_source)
             elif status == 'PENDING_RELEASE':
                 request_db.set_media_status_pending_release(ids, itype, media_info_list=requests, source=subscription_source)
+            request_db.update_media_metadata_details(requests)
 
     if target_status == 'SUBSCRIBED':
         if parent_series_to_ensure_exist:

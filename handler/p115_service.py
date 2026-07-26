@@ -6110,6 +6110,13 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             if not raw_details:
                 return {}
 
+            # PostgreSQL DATE values are returned as datetime.date; organizer paths
+            # consume ISO text and must not slice/date-format database objects.
+            for date_key in ('release_date', 'first_air_date', 'last_air_date', 'air_date'):
+                value = raw_details.get(date_key)
+                if value is not None and hasattr(value, 'isoformat'):
+                    raw_details[date_key] = value.isoformat()
+
             if self.ai_translator:
                 translation_config = dict(config_manager.APP_CONFIG)
                 translation_config[constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE] = False
@@ -7324,6 +7331,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         title = self.details.get('title') or self.original_title
         original_title = self.details.get('original_title') or title
         date_str = self.details.get('date') or ''
+        date_str = date_str.isoformat() if hasattr(date_str, 'isoformat') else str(date_str)
         year = date_str[:4] if date_str else ''
         cfg = self.rename_config
         keep_original = cfg.get('keep_original_name', False)
@@ -7504,7 +7512,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     for movie in collection_movies:
                         m_title = movie.get('title', '')
                         m_orig = movie.get('original_title', '')
-                        m_year = movie.get('release_date', '')[:4] if movie.get('release_date') else ''
+                        movie_date = movie.get('release_date')
+                        movie_date = movie_date.isoformat() if hasattr(movie_date, 'isoformat') else str(movie_date or '')
+                        m_year = movie_date[:4] if movie_date else ''
                         
                         clean_m_title = re.sub(r'[^\w\u4e00-\u9fa5]', '', m_title).lower()
                         clean_m_orig = re.sub(r'[^\w\u4e00-\u9fa5]', '', m_orig).lower()
@@ -7893,6 +7903,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         title = self.details.get('title') or self.original_title
         original_title = self.details.get('original_title') or title
         date_str = self.details.get('date') or ''
+        date_str = date_str.isoformat() if hasattr(date_str, 'isoformat') else str(date_str)
         year = date_str[:4] if date_str else ''
 
         cfg = self.rename_config
