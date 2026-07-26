@@ -7916,6 +7916,19 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         # ★ 保留原名只影响文件名，不影响主目录
         # batch 模式 root_name 可能是“批量文件”，绝不能拿它当目标主目录
         main_format = self._get_rename_format('main_dir', ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'])
+        year_required = (
+            (isinstance(main_format, str) and re.search(r'\b(?:year|year_pure)\b', main_format))
+            or (isinstance(main_format, (list, tuple)) and any(
+                str(part).rsplit('_', 1)[0] in {'year', 'year_pure'}
+                for part in main_format
+            ))
+        )
+        if year_required and not re.fullmatch(r'(?:19|20)\d{2}', year):
+            logger.error(
+                f"  ➜ [115整理] 缺少主目录命名所需的有效发行年份，已中断整理: "
+                f"TMDb={self.tmdb_id}, title={original_title}"
+            )
+            return False
         std_root_name = self._build_name_from_format(
             main_format,
             is_tv=(self.media_type == 'tv'),
