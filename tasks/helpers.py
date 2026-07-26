@@ -8,9 +8,21 @@ from typing import Optional, Dict, Tuple, List, Set, Any
 import logging
 from datetime import datetime, timedelta, timezone
 
-from handler.tmdb import get_movie_details, get_tv_details, get_tv_season_details, search_tv_shows, get_tv_season_details
+from handler.tmdb import (
+    get_movie_details,
+    get_tv_details,
+    get_tv_season_details,
+    get_season_details_tmdb,
+    search_tv_shows,
+)
 from database import settings_db, connection, request_db, media_db
+from database.metadata_provider_db import (
+    build_image_language_parameter,
+    build_image_language_priority,
+    select_image_path,
+)
 from ai_translator import AITranslator
+import config_manager
 import utils
 import constants
 
@@ -1717,6 +1729,93 @@ def calculate_ancestor_ids(item_id: str, id_to_parent_map: dict, library_guid: s
         
     return [str(fid) for fid in ancestors if fid and str(fid).lower() != "none"]
 
+def _apply_subscription_image_preference(
+    details: Optional[Dict[str, Any]],
+    item_type: str,
+    tmdb_id: str,
+    tmdb_api_key: str,
+) -> Optional[Dict[str, Any]]:
+    """Refresh and select subscription artwork using the configured language priority."""
+    if not isinstance(details, dict):
+        return details
+
+    preference = config_manager.APP_CONFIG.get(
+        constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE,
+        "zh",
+    )
+    priorities = build_image_language_priority(details.get("original_language"), preference)
+    image_languages = build_image_language_parameter(priorities)
+
+    try:
+        if item_type == "Movie":
+            image_details = get_movie_details(
+                int(tmdb_id),
+                tmdb_api_key,
+                append_to_response="images",
+                include_image_language=image_languages,
+            )
+        elif item_type == "Series":
+            image_details = get_tv_details(
+                int(tmdb_id),
+                tmdb_api_key,
+                append_to_response="images",
+                include_image_language=image_languages,
+            )
+        else:
+            image_details = None
+    except (TypeError, ValueError):
+        image_details = None
+
+    if image_details:
+        details = dict(details)
+        details["images"] = image_details.get("images") or details.get("images") or {}
+
+    images = details.get("images") or {}
+    details["poster_path"] = (
+        select_image_path(images.get("posters"), priorities)
+        or details.get("poster_path")
+    )
+    details["backdrop_path"] = (
+        select_image_path(images.get("backdrops"), priorities)
+        or details.get("backdrop_path")
+    )
+    return details
+
+
+def _get_subscription_season_details(
+    parent_details: Dict[str, Any],
+    parent_id: str,
+    season_number: int,
+    tmdb_api_key: str,
+) -> Optional[Dict[str, Any]]:
+    preference = config_manager.APP_CONFIG.get(
+        constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE,
+        "zh",
+    )
+    priorities = build_image_language_priority(
+        parent_details.get("original_language"), preference
+    )
+    try:
+        details = get_season_details_tmdb(
+            int(parent_id),
+            int(season_number),
+            tmdb_api_key,
+            append_to_response="images",
+            include_image_language=build_image_language_parameter(priorities),
+        )
+    except (TypeError, ValueError):
+        details = None
+    if not details:
+        return get_tv_season_details(parent_id, season_number, tmdb_api_key)
+
+    images = details.get("images") or {}
+    details["poster_path"] = (
+        select_image_path(images.get("posters"), priorities)
+        or details.get("poster_path")
+    )
+    return details
+
+
 # --- 通用订阅处理函数 ---
 def process_subscription_items_and_update_db(
     tmdb_items: List[Dict[str, Any]], 
@@ -1835,6 +1934,9 @@ def process_subscription_items_and_update_db(
                 if parent_id not in parent_series_cache:
                     p_details = get_tv_details(parent_id, tmdb_api_key)
                     if p_details:
+                        p_details = _apply_subscription_image_preference(
+                            p_details, "Series", parent_id, tmdb_api_key
+                        )
                         parent_series_cache[parent_id] = p_details
                 
                 parent_details = parent_series_cache.get(parent_id)
@@ -1853,7 +1955,9 @@ def process_subscription_items_and_update_db(
                 }
 
                 # 3. 获取季详情
-                details = get_tv_season_details(parent_id, season_num, tmdb_api_key)
+                details = _get_subscription_season_details(
+                    parent_details, parent_id, season_num, tmdb_api_key
+                )
                 if details:
                     details['parent_series_tmdb_id'] = str(parent_id)
                     details['parent_title'] = parent_details.get('name')
@@ -1877,6 +1981,9 @@ def process_subscription_items_and_update_db(
                     continue
                 details = get_tv_details(tmdb_id, tmdb_api_key)
                 if details:
+                    details = _apply_subscription_image_preference(
+                        details, "Series", tmdb_id, tmdb_api_key
+                    )
                     target_db_id = str(details.get('id') or tmdb_id)
                     processed_active_ids.add(target_db_id)
 
@@ -1885,6 +1992,9 @@ def process_subscription_items_and_update_db(
                 if f"{tmdb_id}_Movie" in existing_status_keys: continue
                 details = get_movie_details(tmdb_id, tmdb_api_key)
                 if details:
+                    details = _apply_subscription_image_preference(
+                        details, "Movie", tmdb_id, tmdb_api_key
+                    )
                     target_db_id = str(details.get('id'))
                     processed_active_ids.add(target_db_id)
 
