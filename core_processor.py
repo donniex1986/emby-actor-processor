@@ -2784,7 +2784,10 @@ class MediaProcessor:
                         if d['id'] not in existing_crew_ids:
                             formatted_metadata['credits']['crew'].append(d)
 
-                logger.info("  ➜ [ETK元数据] 元数据、图片和人物由插件从数据库恢复。")
+                if metadata_backfill_only:
+                    logger.info("  ➜ [元数据补齐] 已写入缓存，本次不刷新图片或人物。")
+                else:
+                    logger.info("  ➜ [ETK元数据] 元数据、图片和人物由插件从数据库恢复。")
 
             elif not media_info_only:
                 logger.info("  ➜ [数据库缓存] 元数据和图片由插件从数据库恢复。")
