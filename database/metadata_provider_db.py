@@ -498,6 +498,14 @@ def needs_metadata_backfill(tmdb_id: str, media_type: str) -> bool:
                 WHERE tmdb_id=%s AND item_type=%s AND in_library IS TRUE
                   AND (
                       metadata_schema_version < %s
+                      OR NULLIF(BTRIM(title), '') IS NULL
+                      OR NULLIF(BTRIM(overview), '') IS NULL
+                      OR release_year IS NULL
+                      OR NULLIF(BTRIM(COALESCE(
+                          official_rating_json->>'US', official_rating_json->>'us', '')),
+                          '') IS NULL
+                      OR genres_json IS NULL
+                      OR genres_json = '[]'::jsonb
                       OR (
                           item_type='Series'
                           AND EXISTS (
