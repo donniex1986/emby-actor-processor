@@ -2614,7 +2614,7 @@ class MediaProcessor:
                         authoritative_cast_source,
                         douban_cast_raw
                     )
-                else:
+                elif not metadata_backfill_only:
                     logger.info("  ➜ 当前演员已满额且前排演员人名/角色均已中文化，跳过豆瓣预合并调用。")
 
                 # 把预合并后的演员表回写进源数据，确保后续统一翻译能扫到豆瓣补进来的角色
