@@ -107,7 +107,9 @@ def _enqueue_active_series_notification(item_details: dict, notification_type: s
             "new_episode_ids": [],
         })
         pending["item_details"] = dict(item_details)
-        if notification_type == "new":
+        if notification_type == "wash":
+            pending["notification_type"] = "wash"
+        elif notification_type == "new" and pending["notification_type"] != "wash":
             pending["notification_type"] = "new"
         for episode_id in new_episode_ids or []:
             episode_id = str(episode_id or "").strip()
@@ -129,6 +131,59 @@ def _enqueue_active_series_notification(item_details: dict, notification_type: s
         len(pending["new_episode_ids"]),
         ACTIVE_SERIES_NOTIFICATION_DEBOUNCE_TIME,
     )
+
+
+def _consume_washing_notification_marker(emby_item_ids: List[str]) -> bool:
+    """消费当前入库文件的洗版通知标记，避免后续刷新重复显示洗版成功。"""
+    item_ids = [str(item_id).strip() for item_id in emby_item_ids or [] if str(item_id).strip()]
+    if not item_ids:
+        return False
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT file_pickcode_json, file_sha1_json
+                    FROM media_metadata
+                    WHERE emby_item_ids_json ?| %s
+                    """,
+                    (item_ids,),
+                )
+                pick_codes = set()
+                sha1s = set()
+                for row in cursor.fetchall() or []:
+                    pick_codes.update(str(value).strip() for value in (row.get('file_pickcode_json') or []) if str(value).strip())
+                    sha1s.update(str(value).strip().upper() for value in (row.get('file_sha1_json') or []) if str(value).strip())
+
+                if not pick_codes and not sha1s:
+                    return False
+
+                clauses = []
+                params = []
+                if pick_codes:
+                    clauses.append("pick_code = ANY(%s)")
+                    params.append(list(pick_codes))
+                if sha1s:
+                    clauses.append("UPPER(sha1) = ANY(%s)")
+                    params.append(list(sha1s))
+
+                cursor.execute(
+                    f"""
+                    UPDATE p115_filesystem_cache
+                    SET washing_snapshot_json = washing_snapshot_json - 'notification_pending'
+                    WHERE ({' OR '.join(clauses)})
+                      AND washing_snapshot_json @> '{{"notification_pending": true}}'::jsonb
+                    RETURNING id
+                    """,
+                    tuple(params),
+                )
+                consumed = bool(cursor.fetchall())
+                conn.commit()
+                return consumed
+    except Exception as e:
+        logger.warning(f"  ➜ [洗版通知] 消费洗版标记失败，沿用普通入库通知: {e}")
+        return False
 
 
 def _should_skip_non_etk_strm_webhook(item_type: str, item_name: str, item_path: str) -> bool:
@@ -1182,7 +1237,9 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     try:
         # 如果提供了 new_episode_ids，说明是追更通知
         # 如果 is_new_item 为 True，说明是新入库通知
-        notif_type = 'update' if (precise_new_episode_ids and not is_new_item) else 'new'
+        notice_item_ids = precise_new_episode_ids if item_type == "Series" else [item_id]
+        is_washing = _consume_washing_notification_marker(notice_item_ids)
+        notif_type = 'wash' if is_washing else ('update' if (precise_new_episode_ids and not is_new_item) else 'new')
         
         if aggregate_notification and item_type == "Series" and precise_new_episode_ids:
             _enqueue_active_series_notification(item_details, notif_type, precise_new_episode_ids)

@@ -8834,6 +8834,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 """给 p115_filesystem_cache 写入洗版优先级快照。失败只返回空快照，不影响整理。"""
                 try:
                     file_sha1 = _item.get('sha1') or _item.get('sha')
+                    notification_pending = bool(_item.get('_washing_replaces_existing'))
                     level = _batch_washing_level_from_reason(_reason)
                     level_reason = str(_reason or '').strip()
 
@@ -8862,7 +8863,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 norm_new = WashingService._normalize_info(new_info)
                                 level, level_reason = WashingService.get_level(norm_new, priorities)
 
-                    if level >= 9999:
+                    if level >= 9999 and not notification_pending:
                         return {}
 
                     identity = {
@@ -8875,16 +8876,19 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             'episode_number': _item.get('_episode_num'),
                         })
                     from datetime import datetime, timezone
+                    snapshot = {
+                        'reason': level_reason or (f'优先级 {level}' if level < 9999 else ''),
+                        'target_cid': str(target_cid or ''),
+                        'media_type': 'movie' if self.media_type == 'movie' else 'series',
+                        'version_slot': _item.get('_washing_slot') if isinstance(_item, dict) else None,
+                        'identity': identity,
+                        'evaluated_at': datetime.now(timezone.utc).isoformat(),
+                    }
+                    if notification_pending:
+                        snapshot['notification_pending'] = True
                     return {
-                        'washing_level': int(level),
-                        'washing_snapshot_json': {
-                            'reason': level_reason or f'优先级 {level}',
-                            'target_cid': str(target_cid or ''),
-                            'media_type': 'movie' if self.media_type == 'movie' else 'series',
-                            'version_slot': _item.get('_washing_slot') if isinstance(_item, dict) else None,
-                            'identity': identity,
-                            'evaluated_at': datetime.now(timezone.utc).isoformat()
-                        }
+                        'washing_level': int(level) if level < 9999 else None,
+                        'washing_snapshot_json': snapshot,
                     }
                 except Exception as e:
                     logger.debug(f"  ➜ [洗版快照] 计算失败: {_new_name} -> {e}")
