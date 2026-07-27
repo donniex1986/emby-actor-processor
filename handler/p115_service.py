@@ -7412,26 +7412,18 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         """
         返回命中的垃圾文件/样本/花絮文本 (基于 MP 规则)
         """
-        # 垃圾文件正则列表 (合并了通用规则和你提供的 MP 规则)
-        junk_patterns = [
-            # 基础关键词
-            r'(?i)\b(sample|trailer|featurette|bonus)\b',
+        configured = settings_db.get_setting('junk_file_patterns')
+        junk_patterns = configured if isinstance(configured, list) else utils.DEFAULT_JUNK_FILE_PATTERNS
 
-            # MP 规则集
-            r'(?i)Special Ending Movie',
-            r'(?i)\[((TV|BD|\bBlu-ray\b)?\s*CM\s*\d{2,3})\]',
-            r'(?i)\[Teaser.*?\]',
-            r'(?i)\[PV.*?\]',
-            r'(?i)\[NC[OPED]+.*?\]',
-            r'(?i)\[S\d+\s+Recap(\s+\d+)?\]',
-            r'(?i)Preview',
-            r'(?i)\b(CDs|SPs|Scans|Bonus|映像特典|映像|specials|特典CD|Logo|Preview|/mv)\b',
-            r'(?i)\b(NC)?(Disc|片头|OP|SP|ED|Advice|Trailer|BDMenu|片尾|PV|CM|Preview|Info|EDPV|SongSpot|BDSpot)(\d{0,2}|_ALL)\b',
-            r'(?i)WiKi\.sample'
-        ]
-
-        for pattern in junk_patterns:
-            match = re.search(pattern, filename)
+        for item in junk_patterns:
+            pattern = item.get('label') if isinstance(item, dict) else item
+            if not isinstance(pattern, str) or not pattern.strip():
+                continue
+            try:
+                match = re.search(pattern, filename)
+            except re.error:
+                logger.warning(f"  ➜ 已跳过无效的文件屏蔽正则: {pattern}")
+                continue
             if match:
                 return match.group(0)
         return None

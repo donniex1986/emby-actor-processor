@@ -4,6 +4,7 @@ from flask import Blueprint, request, jsonify
 import logging
 from gevent import spawn_later
 import json
+import re
 import psycopg2
 import pytz
 from datetime import datetime
@@ -19,6 +20,7 @@ from utils import (
     DEFAULT_COUNTRY_MAPPING, 
     DEFAULT_LANGUAGE_MAPPING,
     DEFAULT_RELEASE_GROUP_MAPPING,
+    DEFAULT_JUNK_FILE_PATTERNS,
     DEFAULT_RATING_MAPPING, 
     DEFAULT_RATING_PRIORITY,
     GENRE_TRANSLATION_PATCH 
@@ -784,6 +786,41 @@ def api_save_release_group_mapping():
 @admin_required
 def api_get_release_group_defaults():
     return jsonify(ensure_release_group_mapping_list(None))
+
+# --- 获取文件屏蔽规则 ---
+@custom_collections_bp.route('/config/junk_file_patterns', methods=['GET'])
+def api_get_junk_file_patterns():
+    data = settings_db.get_setting('junk_file_patterns')
+    patterns = data if isinstance(data, list) else DEFAULT_JUNK_FILE_PATTERNS
+    return jsonify([{"label": item.get('label', '') if isinstance(item, dict) else str(item)} for item in patterns])
+
+# --- 保存文件屏蔽规则 ---
+@custom_collections_bp.route('/config/junk_file_patterns', methods=['POST'])
+@admin_required
+def api_save_junk_file_patterns():
+    data = request.json
+    if not isinstance(data, list):
+        return jsonify({"error": "数据格式错误，必须是列表"}), 400
+
+    patterns = []
+    for item in data:
+        pattern = item.get('label') if isinstance(item, dict) else item
+        pattern = str(pattern or '').strip()
+        if not pattern:
+            continue
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            return jsonify({"error": f"无效正则：{pattern}（{e}）"}), 400
+        patterns.append(pattern)
+    settings_db.save_setting('junk_file_patterns', patterns)
+    return jsonify({"message": "保存成功"})
+
+# --- 恢复默认文件屏蔽规则 ---
+@custom_collections_bp.route('/config/junk_file_patterns/defaults', methods=['GET'])
+@admin_required
+def api_get_junk_file_pattern_defaults():
+    return jsonify([{"label": pattern} for pattern in DEFAULT_JUNK_FILE_PATTERNS])
 
 # --- 筛选器用的关键词列表 ---
 @custom_collections_bp.route('/config/keywords', methods=['GET'])

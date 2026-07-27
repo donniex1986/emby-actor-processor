@@ -281,6 +281,21 @@ DEFAULT_RELEASE_GROUP_MAPPING = {
     "影巢": ['HiveWeb'],
 }
 
+# 115 整理时用于忽略样本、预告及花絮文件的文件名正则。
+DEFAULT_JUNK_FILE_PATTERNS = [
+    r'(?i)\b(sample|trailer|featurette|bonus)\b',
+    r'(?i)Special Ending Movie',
+    r'(?i)\[((TV|BD|\bBlu-ray\b)?\s*CM\s*\d{2,3})\]',
+    r'(?i)\[Teaser.*?\]',
+    r'(?i)\[PV.*?\]',
+    r'(?i)\[NC[OPED]+.*?\]',
+    r'(?i)\[S\d+\s+Recap(\s+\d+)?\]',
+    r'(?i)Preview',
+    r'(?i)\b(CDs|SPs|Scans|Bonus|映像特典|映像|specials|特典CD|Logo|Preview|/mv)\b',
+    r'(?i)\b(NC)?(Disc|片头|OP|SP|ED|Advice|Trailer|BDMenu|片尾|PV|CM|Preview|Info|EDPV|SongSpot|BDSpot)(\d{0,2}|_ALL)\b',
+    r'(?i)WiKi\.sample',
+]
+
 # --- 关键词预设表 ---
 DEFAULT_KEYWORD_MAPPING = [
     {"label": "丧尸", "en": ["zombie"], "ids": [12377]},

@@ -170,7 +170,27 @@
         <n-button dashed block class="mt-4" @click="addItem(ratingLabelList, 'simple')">添加分级标签</n-button>
       </n-tab-pane>
 
-      <!-- Tab 7: 分级制度 (映射) -->
+      <!-- Tab 7: 文件屏蔽规则 -->
+      <n-tab-pane name="junk_file_patterns" tab="文件屏蔽词">
+        <n-alert type="info" :bordered="false" class="mb-4">
+          匹配文件名的正则规则。命中的文件会在整理时按垃圾文件处理。
+        </n-alert>
+        <div class="list-header">
+          <div class="col-handle"></div>
+          <div class="junk-pattern-column">正则规则</div>
+          <div class="col-action">操作</div>
+        </div>
+        <div ref="junkPatternListRef" class="sortable-list">
+          <div v-for="(item, index) in junkPatternList" :key="item.id" class="list-item">
+            <div class="col-handle drag-handle"><n-icon :component="DragIcon" /></div>
+            <div class="junk-pattern-column"><n-input v-model:value="item.label" placeholder="例如：(?i)\\btrailer\\b" /></div>
+            <div class="col-action"><n-button circle text type="error" @click="removeItem(junkPatternList, index)"><n-icon :component="DeleteIcon" /></n-button></div>
+          </div>
+        </div>
+        <n-button dashed block class="mt-4" @click="addItem(junkPatternList, 'junk_pattern')">添加屏蔽规则</n-button>
+      </n-tab-pane>
+
+      <!-- Tab 8: 分级制度 (映射) -->
       <n-tab-pane name="ratings" tab="分级制度">
         <n-alert type="info" :bordered="false" class="mb-4">
           TMDb 返回各国分级数据。在此定义<b>优先级</b>和<b>中文映射</b>。<br/>
@@ -323,6 +343,7 @@ const countryList = ref([]);
 const languageList = ref([]);
 const releaseGroupList = ref([]);
 const ratingLabelList = ref([]); // 新增：分级标签列表
+const junkPatternList = ref([]);
 
 // 分级映射数据
 const ratingMapping = ref({}); // 结构: { "US": [{code: 'R', label: '限制级'}] }
@@ -339,6 +360,7 @@ const countryListRef = ref(null);
 const languageListRef = ref(null);
 const releaseGroupListRef = ref(null);
 const ratingLabelListRef = ref(null);
+const junkPatternListRef = ref(null);
 
 let sortables = [];
 
@@ -368,7 +390,7 @@ const processBackendData = (data, type) => {
     if (type === 'country' || type === 'language' || type === 'release_group') {
       base.value = item.value || '';
       base.aliases = Array.isArray(item.aliases) ? item.aliases.join(', ') : (item.aliases || '');
-    } else if (type === 'simple') {
+    } else if (type === 'simple' || type === 'junk_pattern') {
       // simple logic
     } else if (type === 'studio') {
       // ★★★ 修改：工作室特殊处理，读取分离的 IDs ★★★
@@ -411,7 +433,7 @@ const processFrontendData = (list, type) => {
         base.value = item.value ? item.value.trim() : '';
       }
       base.aliases = item.aliases ? item.aliases.split(',').map(s => s.trim()).filter(s => s) : [];
-    } else if (type === 'simple') {
+    } else if (type === 'simple' || type === 'junk_pattern') {
       // simple logic
     } else if (type === 'studio') {
       // ★★★ 修改：工作室特殊处理，保存分离的 IDs ★★★
@@ -486,6 +508,7 @@ const setupSortables = () => {
       if (languageListRef.value) initSortable(languageListRef.value, languageList);
       if (releaseGroupListRef.value) initSortable(releaseGroupListRef.value, releaseGroupList);
       if (ratingLabelListRef.value) initSortable(ratingLabelListRef.value, ratingLabelList);
+      if (junkPatternListRef.value) initSortable(junkPatternListRef.value, junkPatternList);
     }
   });
 };
@@ -497,12 +520,13 @@ watch(activeTab, () => {
 // 初始化数据
 const fetchData = async () => {
   try {
-    const [kwRes, stRes, cnRes, lgRes, rgRes, rMapRes, rPrioRes, rLabelRes] = await Promise.all([
+    const [kwRes, stRes, cnRes, lgRes, rgRes, jpRes, rMapRes, rPrioRes, rLabelRes] = await Promise.all([
       axios.get('/api/custom_collections/config/keyword_mapping'),
       axios.get('/api/custom_collections/config/studio_mapping'),
       axios.get('/api/custom_collections/config/country_mapping'),
       axios.get('/api/custom_collections/config/language_mapping'),
       axios.get('/api/custom_collections/config/release_group_mapping'),
+      axios.get('/api/custom_collections/config/junk_file_patterns'),
       axios.get('/api/custom_collections/config/rating_mapping'),
       axios.get('/api/custom_collections/config/rating_priority'),
       axios.get('/api/custom_collections/config/unified_ratings')
@@ -514,6 +538,7 @@ const fetchData = async () => {
     languageList.value = processBackendData(lgRes.data, 'language');
     releaseGroupList.value = processBackendData(rgRes.data, 'release_group');
     ratingLabelList.value = processBackendData(rLabelRes.data, 'simple');
+    junkPatternList.value = processBackendData(jpRes.data, 'junk_pattern');
     
     ratingMapping.value = rMapRes.data || {};
     ratingPriority.value = rPrioRes.data || [];
@@ -529,7 +554,7 @@ const addItem = (list, type = 'normal') => {
   const item = { id: generateId(), label: '' };
   if (type === 'country' || type === 'language' || type === 'release_group') {
     item.value = ''; item.aliases = '';
-  } else if (type === 'simple') {
+  } else if (type === 'simple' || type === 'junk_pattern') {
     // 仅需要 label
   } else if (list === studioList) { 
     // 注意：这里判断 list === studioList 或者传 type='studio' 都可以
@@ -641,7 +666,8 @@ const handleRestoreDefaults = () => {
     'countries': { url: 'country_mapping', list: countryList, type: 'country' },
     'languages': { url: 'language_mapping', list: languageList, type: 'language' },
     'release_groups': { url: 'release_group_mapping', list: releaseGroupList, type: 'release_group' },
-    'rating_labels': { url: 'unified_ratings', list: ratingLabelList, type: 'simple' }
+    'rating_labels': { url: 'unified_ratings', list: ratingLabelList, type: 'simple' },
+    'junk_file_patterns': { url: 'junk_file_patterns', list: junkPatternList, type: 'junk_pattern' }
   };
   
   const current = typeMap[activeTab.value];
@@ -674,6 +700,7 @@ const handleSave = async () => {
       axios.post('/api/custom_collections/config/country_mapping', processFrontendData(countryList.value, 'country')),
       axios.post('/api/custom_collections/config/language_mapping', processFrontendData(languageList.value, 'language')),
       axios.post('/api/custom_collections/config/release_group_mapping', processFrontendData(releaseGroupList.value, 'release_group')),
+      axios.post('/api/custom_collections/config/junk_file_patterns', processFrontendData(junkPatternList.value, 'junk_pattern')),
       axios.post('/api/custom_collections/config/rating_mapping', ratingMapping.value),
       axios.post('/api/custom_collections/config/rating_priority', ratingPriority.value),
       axios.post('/api/custom_collections/config/unified_ratings', processFrontendData(ratingLabelList.value, 'simple'))
@@ -682,7 +709,7 @@ const handleSave = async () => {
     await fetchData();
   } catch (e) {
     console.error(e);
-    message.error('保存失败');
+    message.error(e.response?.data?.error || '保存失败');
   } finally {
     isSaving.value = false;
   }
@@ -740,6 +767,7 @@ onUnmounted(() => {
 .col-handle { width: 30px; display: flex; align-items: center; cursor: grab; color: var(--n-text-color-3); }
 .col-handle:active { cursor: grabbing; }
 .col-label { width: 120px; }
+.junk-pattern-column { flex: 1; min-width: 0; }
 .col-en { flex: 1.5; }
 .col-ids { flex: 1; }
 .col-extra { flex: 2; } /* 用于国家别名 */

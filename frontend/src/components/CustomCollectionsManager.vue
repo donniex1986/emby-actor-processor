@@ -405,7 +405,7 @@
                         <template #trigger>
                           <n-icon :component="HelpIcon" style="margin-left: 8px; cursor: help; color: var(--n-text-color-3); flex-shrink: 0;" />
                         </template>
-                        工作室筛选基于“映射管理”中的配置。
+                        工作室筛选基于“映射与词表”中的配置。
                       </n-tooltip>
                     </template>
                     <template v-else-if="rule.field === 'keywords'">

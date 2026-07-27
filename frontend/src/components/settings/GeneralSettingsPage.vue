@@ -949,19 +949,19 @@
                       </n-alert>
                     </n-card>
 
-                    <!-- 卡片 3：映射管理 -->
+                    <!-- 卡片 3：映射与词表 -->
                     <n-card :bordered="false" class="dashboard-card">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
-                          <span class="card-title">映射管理</span>
+                          <span class="card-title">映射与词表</span>
                           <n-button secondary type="info" @click="mappingManagerModalVisible = true">
                             <template #icon><n-icon :component="SparklesIcon" /></template>
-                            管理映射
+                            管理词表
                           </n-button>
                         </div>
                       </template>
                       <n-alert type="info" :show-icon="true">
-                        统一管理关键词、工作室、国家地区、原语言、发布组与分级映射，识别和筛选逻辑会读取这里的配置。
+                        统一管理关键词、工作室、国家地区、原语言、发布组、文件屏蔽词与分级映射，识别和筛选逻辑会读取这里的配置。
                       </n-alert>
                     </n-card>
 
@@ -1718,11 +1718,11 @@
     />
     <!-- ★ 引入阶梯洗版优先级模态框 -->
     <WashingPriorityModal ref="washingPriorityModalRef" />
-    <!-- 映射管理模态框 -->
+    <!-- 映射与词表模态框 -->
     <n-modal
       v-model:show="mappingManagerModalVisible"
       preset="card"
-      title="映射规则管理"
+      title="映射与词表"
       :style="modalStyle(900)"
       :bordered="false"
       class="custom-modal glass-modal"
