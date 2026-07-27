@@ -12,6 +12,7 @@ import task_manager
 from logger_setup import frontend_log_queue
 import config_manager
 import handler.emby as emby
+from handler.emby_discovery import resolve_proxy_discovery_url
 # 导入共享模块
 import extensions
 from extensions import admin_required, task_lock_required
@@ -597,12 +598,31 @@ def api_save_config():
                     logger.info(f"配置净化 (虚拟库): 已自动移除 {len(removed_ids)} 个无效ID: {removed_ids}。")
                 new_config_data['proxy_native_view_selection'] = cleaned_ids
         
+        lock_discovery = bool(
+            new_config_data.get(constants.CONFIG_OPTION_PROXY_ENABLED)
+            and new_config_data.get(constants.CONFIG_OPTION_PROXY_LOCK_DISCOVERY_ADDRESS)
+        )
+        new_config_data[constants.CONFIG_OPTION_PROXY_LOCK_DISCOVERY_ADDRESS] = lock_discovery
+        discovery_url = ""
+        if lock_discovery:
+            try:
+                discovery_url = resolve_proxy_discovery_url(new_config_data)
+            except (TypeError, ValueError, RuntimeError) as e:
+                return jsonify({"error": f"无法锁定 Emby 反代地址：{e}"}), 400
+
         save_config_and_reload(new_config_data)
 
         etk_url = str(new_config_data.get(constants.CONFIG_OPTION_ETK_SERVER_URL) or '').strip()
         if etk_url and emby_url and emby_api_key:
             if not emby.configure_etk_plugin_origin(emby_url, emby_api_key, etk_url):
                 logger.warning("通用配置已保存，但 ETK 服务地址未能同步到 Emby 插件。")
+        if emby_url and emby_api_key:
+            if not emby.configure_etk_plugin_discovery_url(
+                emby_url,
+                emby_api_key,
+                discovery_url,
+            ):
+                logger.warning("通用配置已保存，但 Emby 反代发现地址未能同步到插件。")
         
         logger.debug("API /api/config (POST): 全面净化后的配置已成功传递给保存函数。")
         return jsonify({"message": "配置已成功保存并自动净化！"})

@@ -125,6 +125,28 @@ def configure_etk_plugin_origin(base_url: str, api_key: str, etk_url: str) -> bo
         return False
 
 
+def configure_etk_plugin_discovery_url(base_url: str, api_key: str, discovery_url: str) -> bool:
+    if not all([base_url, api_key]):
+        return False
+    try:
+        response = emby_client.post(
+            f"{base_url.rstrip('/')}/ETKMediaInfo/DiscoveryUrl",
+            params={"api_key": api_key},
+            json={"Url": str(discovery_url or "")},
+        )
+        if not response.ok:
+            logger.warning(
+                "  ➜ [ETK元数据] 配置 Emby 本地发现地址失败: HTTP %s",
+                response.status_code,
+            )
+            return False
+        result = response.json() or {}
+        return bool(result.get("Configured", result.get("configured")))
+    except Exception as e:
+        logger.warning("  ➜ [ETK元数据] 配置 Emby 本地发现地址异常: %s", e)
+        return False
+
+
 def normalize_etk_mediainfo_payload(raw: Any) -> Dict[str, Any]:
     """Normalize cached ETK media info to the bridge plugin request body."""
     if isinstance(raw, (bytes, bytearray)):

@@ -191,6 +191,18 @@
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled" style="width: 100%;" placeholder="8096"/>
                       </n-form-item-grid-item>
 
+                      <n-form-item-grid-item label="锁定反代地址" path="proxy_lock_discovery_address" label-width="100">
+                        <n-tooltip trigger="hover">
+                          <template #trigger>
+                            <n-switch
+                              v-model:value="configModel.proxy_lock_discovery_address"
+                              :disabled="!configModel.proxy_enabled"
+                            />
+                          </template>
+                          让 Emby 客户端通过局域网发现时始终使用当前反代地址
+                        </n-tooltip>
+                      </n-form-item-grid-item>
+
                       <!-- 3. 缺失占位符 -->
                       <n-form-item-grid-item label="缺失占位符" path="proxy_show_missing_placeholders" label-width="100">
                          <n-space align="center">
@@ -2765,6 +2777,11 @@ const fetchNativeViewsSimple = async () => {
 watch(() => configModel.value?.refresh_emby_after_update, (isRefreshEnabled) => {
   if (configModel.value && !isRefreshEnabled) {
     configModel.value.auto_lock_cast_after_update = false;
+  }
+});
+watch(() => configModel.value?.proxy_enabled, (enabled) => {
+  if (configModel.value && !enabled) {
+    configModel.value.proxy_lock_discovery_address = false;
   }
 });
 watch(

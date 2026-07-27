@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "10.8.45"  # 更新版本号
+APP_VERSION = "10.8.46"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -109,6 +109,7 @@ DEFAULT_TELEGRAM_NOTIFICATION_TEMPLATES = {
 CONFIG_SECTION_REVERSE_PROXY = "ReverseProxy"
 CONFIG_OPTION_PROXY_ENABLED = "proxy_enabled"
 CONFIG_OPTION_PROXY_PORT = "proxy_port"
+CONFIG_OPTION_PROXY_LOCK_DISCOVERY_ADDRESS = "proxy_lock_discovery_address"
 CONFIG_OPTION_PROXY_ALLOW_TRANSCODING = "proxy_allow_transcoding"
 CONFIG_OPTION_PROXY_MERGE_NATIVE = "proxy_merge_native_libraries"
 CONFIG_OPTION_PROXY_NATIVE_VIEW_SELECTION = "proxy_native_view_selection"  # List[str]
