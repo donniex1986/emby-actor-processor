@@ -204,9 +204,58 @@ class _RangeReader:
         return {"merged": len(merged), "bytes": total}
 
 
+class _MappedRangeReader:
+    def __init__(self, reader, ranges):
+        self.reader = reader
+        self.ranges = [(int(start), int(length)) for start, length in ranges if length]
+        self.size = sum(length for _, length in self.ranges)
+
+    @property
+    def requests(self):
+        return self.reader.requests
+
+    @property
+    def bytes(self):
+        return self.reader.bytes
+
+    def _map(self, start, length):
+        start = int(start)
+        length = int(length)
+        if length <= 0:
+            return []
+        if start < 0 or start + length > self.size:
+            raise RuntimeError("Nested ISO range is out of bounds")
+
+        remaining = length
+        cursor = 0
+        mapped = []
+        for physical_start, span in self.ranges:
+            if start >= cursor + span:
+                cursor += span
+                continue
+            local_start = max(0, start - cursor)
+            take = min(span - local_start, remaining)
+            mapped.append((physical_start + local_start, take))
+            start += take
+            remaining -= take
+            if remaining <= 0:
+                break
+            cursor += span
+        return mapped
+
+    def read(self, start, length):
+        return b"".join(self.reader.read(offset, size) for offset, size in self._map(start, length))
+
+    def prefetch(self, ranges, **kwargs):
+        mapped = []
+        for start, length in ranges:
+            mapped.extend(self._map(start, length))
+        return self.reader.prefetch(mapped, **kwargs)
+
+
 class _UdfIsoReader:
-    def __init__(self, url, user_agent):
-        self.reader = _RangeReader(url, user_agent)
+    def __init__(self, url=None, user_agent=None, reader=None):
+        self.reader = reader or _RangeReader(url, user_agent)
         self.part_start = None
         self.meta_blob = b""
         self._init_udf()
@@ -501,20 +550,56 @@ def _parse_mpls(data, stream_sizes):
 
 
 def _find_bdmv_dir(iso, root, max_wrapper_depth=4):
-    """Find BDMV at the root or below a small chain of wrapper directories."""
-    current = root
-    path = []
-    for _ in range(max_wrapper_depth + 1):
-        bdmv = iso.find(current, "BDMV")
-        if bdmv:
-            return bdmv, path + ["BDMV"]
+    """Find the most complete BDMV below a limited set of wrapper directories."""
+    queue = [(root, [])]
+    candidates = []
+    seen = set()
+    while queue:
+        current, path = queue.pop(0)
+        key = (current.get("part"), current.get("lbn"))
+        if key in seen:
+            continue
+        seen.add(key)
 
-        child_dirs = [entry for entry in iso.list_dir(current) if entry.get("flags", 0) & 2]
-        if len(child_dirs) != 1:
-            break
-        current = child_dirs[0]
-        path.append(current["name"])
-    return None, path
+        for child in iso.list_dir(current):
+            if not (child.get("flags", 0) & 2):
+                continue
+            child_path = path + [child["name"]]
+            if child["name"].upper() == "BDMV":
+                counts = []
+                for name in ("PLAYLIST", "STREAM", "CLIPINF"):
+                    directory = iso.find(child, name)
+                    counts.append(len(iso.list_dir(directory)) if directory else -1)
+                score = (
+                    sum(count > 0 for count in counts),
+                    sum(count >= 0 for count in counts),
+                    sum(max(0, count) for count in counts),
+                    -len(child_path),
+                )
+                candidates.append((score, child, child_path))
+            elif len(path) < max_wrapper_depth:
+                queue.append((child, child_path))
+
+    if not candidates:
+        return None, []
+    _, bdmv, path = max(candidates, key=lambda item: item[0])
+    return bdmv, path
+
+
+def _open_single_nested_iso(iso, root):
+    candidates = [
+        entry for entry in iso.list_dir(root)
+        if not (entry.get("flags", 0) & 2) and entry["name"].lower().endswith(".iso")
+    ]
+    if len(candidates) != 1:
+        return None, ""
+
+    entry = candidates[0]
+    fields, _, _ = iso.entry_info(entry)
+    ranges = iso.physical_ranges_for_file(entry)
+    if not ranges or sum(length for _, length in ranges) < fields["info_len"]:
+        return None, ""
+    return _UdfIsoReader(reader=_MappedRangeReader(iso.reader, ranges)), entry["name"]
 
 
 def _read_file_slice(iso, ranges, offset, length):
@@ -829,6 +914,16 @@ def probe_bluray_iso(client, file_node, sha1=None):
     root = iso.root()
     bdmv, bdmv_path = _find_bdmv_dir(iso, root)
     if not bdmv:
+        nested_iso, nested_name = _open_single_nested_iso(iso, root)
+        if nested_iso:
+            nested_root = nested_iso.root()
+            nested_bdmv, nested_path = _find_bdmv_dir(nested_iso, nested_root)
+            if nested_bdmv:
+                iso = nested_iso
+                root = nested_root
+                bdmv = nested_bdmv
+                bdmv_path = [nested_name] + nested_path
+    if not bdmv:
         raise RuntimeError("ISO 内没有 BDMV 目录")
     playlist_dir = iso.find(bdmv, "PLAYLIST")
     stream_dir = iso.find(bdmv, "STREAM")
@@ -837,6 +932,16 @@ def probe_bluray_iso(client, file_node, sha1=None):
         raise RuntimeError("BDMV 目录缺少 PLAYLIST/STREAM/CLIPINF")
 
     stream_entries = iso.list_dir(stream_dir)
+    if not stream_entries:
+        for child in iso.list_dir(bdmv):
+            if not (child.get("flags", 0) & 2):
+                continue
+            nested_stream = iso.find(child, "STREAM")
+            nested_entries = iso.list_dir(nested_stream) if nested_stream else []
+            if nested_entries:
+                stream_dir = nested_stream
+                stream_entries = nested_entries
+                break
     iso.prefetch_file_entries(stream_entries, max_gap=262144, max_chunk=16 * 1024 * 1024)
     stream_sizes = {}
     stream_ads = {}
@@ -861,12 +966,21 @@ def probe_bluray_iso(client, file_node, sha1=None):
             playlists.append({"name": entry["name"], **parsed})
 
     main_playlist = None
+    largest_stream = max(stream_sizes, key=stream_sizes.get)
     if playlists:
         playlists.sort(key=lambda item: (item["max_clip_size"], item["unique_size"], item["duration"]), reverse=True)
-        main_playlist = playlists[0]
-        main_clip = max({item["clip"] for item in main_playlist["clips"]}, key=lambda clip: stream_sizes.get(clip, 0))
+        referenced_clips = {clip["clip"] for item in playlists for clip in item["clips"]}
+        largest_playlist_size = max(item["unique_size"] for item in playlists)
+        if (
+            largest_stream not in referenced_clips
+            and stream_sizes[largest_stream] > largest_playlist_size * 2
+        ):
+            main_clip = largest_stream
+        else:
+            main_playlist = playlists[0]
+            main_clip = max({item["clip"] for item in main_playlist["clips"]}, key=lambda clip: stream_sizes.get(clip, 0))
     else:
-        main_clip = max(stream_sizes, key=stream_sizes.get)
+        main_clip = largest_stream
 
     clpi_name = os.path.splitext(main_clip)[0] + ".clpi"
     clpi_entry = iso.find(clipinf_dir, clpi_name)
@@ -878,10 +992,10 @@ def probe_bluray_iso(client, file_node, sha1=None):
         streams = _parse_clpi_streams(clpi_data, name)
     duration = float((main_playlist or {}).get("duration") or 0)
     fallback = ""
+    main_stream_entry = stream_entries_by_name.get(main_clip)
+    if not main_stream_entry:
+        raise RuntimeError(f"未找到主片 M2TS: {main_clip}")
     if not streams:
-        main_stream_entry = stream_entries_by_name.get(main_clip)
-        if not main_stream_entry:
-            raise RuntimeError(f"未找到主片 M2TS: {main_clip}")
         streams, sampled_duration = _probe_m2ts_sample(
             iso,
             main_stream_entry,
@@ -889,6 +1003,13 @@ def probe_bluray_iso(client, file_node, sha1=None):
         )
         duration = duration or sampled_duration
         fallback = "m2ts_sample"
+    elif not main_playlist:
+        duration = _m2ts_duration_from_pcr(
+            iso,
+            iso.physical_ranges_for_file(main_stream_entry),
+            stream_sizes.get(main_clip, 0),
+        )
+        fallback = "largest_m2ts"
 
     _detect_iso_effects(name, streams)
 
