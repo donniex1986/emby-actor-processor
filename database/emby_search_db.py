@@ -18,6 +18,10 @@ from database.connection import get_db_connection
 
 
 _COMPACT_RE = re.compile(r"[^0-9a-z\u3400-\u9fff]+", re.IGNORECASE)
+_SEARCH_PART_RE = re.compile(r"[0-9a-z\u3400-\u9fff]+", re.IGNORECASE)
+_PINYIN_INITIAL_OVERRIDES = {
+    "甄嬛传": "zhz",
+}
 
 
 def _normalize(value) -> str:
@@ -38,34 +42,12 @@ def _pinyin(value: str, style: Style) -> str:
     return "".join(values).casefold()[:512]
 
 
-def _pinyin_variants(value: str, style: Style, limit: int = 16) -> list[str]:
-    variants = [""]
-    for part in pinyin(
-        value,
-        style=style,
-        strict=False,
-        errors="default",
-        heteronym=True,
-    ):
-        choices = []
-        for option in part or []:
-            text = str(option or "").casefold()
-            text = text[:1] if style == Style.FIRST_LETTER else text
-            if text and text not in choices:
-                choices.append(text)
-        if not choices:
-            continue
-        expanded = []
-        for prefix in variants:
-            for choice in choices:
-                candidate = (prefix + choice)[:512]
-                if candidate not in expanded:
-                    expanded.append(candidate)
-                if len(expanded) >= limit:
-                    break
-            if len(expanded) >= limit:
-                break
-        variants = expanded or variants
+def _pinyin_variants(value: str, style: Style) -> list[str]:
+    variants = [_pinyin(value, style)]
+    if style == Style.FIRST_LETTER:
+        override = _PINYIN_INITIAL_OVERRIDES.get(value)
+        if override and override not in variants:
+            variants.append(override)
     return variants
 
 
@@ -94,11 +76,16 @@ def _prepare_item(item: dict) -> Optional[tuple]:
     pinyin_full = _pinyin(search_compact, Style.NORMAL)
     initial_variants = []
     for source in dict.fromkeys(
-        value for value in (_compact(title), _compact(original_title), _compact(series_name)) if value
+        value for value in (title, original_title, series_name) if value
     ):
-        for variant in _pinyin_variants(source, Style.FIRST_LETTER):
-            if variant not in initial_variants:
-                initial_variants.append(variant)
+        initial_sources = [_compact(source)]
+        initial_sources.extend(
+            _compact(part) for part in _SEARCH_PART_RE.findall(_normalize(source))
+        )
+        for initial_source in dict.fromkeys(value for value in initial_sources if value):
+            for variant in _pinyin_variants(initial_source, Style.FIRST_LETTER):
+                if variant not in initial_variants:
+                    initial_variants.append(variant)
     pinyin_initials = "|".join(initial_variants)
     return (
         item_id,
@@ -266,11 +253,6 @@ def search(query: str, item_types: Optional[list[str]] = None, limit: int = 300)
                            WHEN %(pinyin_enabled)s AND %(initials)s = ANY(
                                string_to_array(pinyin_initials, '|')
                            ) THEN 450
-                           WHEN %(pinyin_enabled)s AND EXISTS (
-                               SELECT 1
-                               FROM unnest(string_to_array(pinyin_initials, '|')) AS variant
-                               WHERE variant LIKE %(initials)s || '%%'
-                           ) THEN 400
                            ELSE 300
                        END - CHAR_LENGTH(search_compact) AS rank
                 FROM emby_search_index
@@ -291,7 +273,7 @@ def search(query: str, item_types: Optional[list[str]] = None, limit: int = 300)
                           %(pinyin_enabled)s
                           AND (
                               POSITION(%(full)s IN pinyin_full) > 0
-                              OR POSITION(%(initials)s IN pinyin_initials) > 0
+                              OR %(initials)s = ANY(string_to_array(pinyin_initials, '|'))
                           )
                       )
                   )
