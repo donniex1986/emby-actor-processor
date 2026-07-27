@@ -32,6 +32,7 @@ from handler import tmdb_collections as collections_handler
 from services.cover_generator import CoverGeneratorService
 from database import custom_collection_db, tmdb_collection_db, settings_db, user_db, media_db, queries_db, watchlist_db
 from database.connection import get_db_connection
+from database import emby_search_db
 from database.log_db import LogDBManager
 from handler.p115_service import P115Service, SmartOrganizer, get_config
 from services.subscribe_assistant.manager import SubscribeAssistantManager
@@ -71,6 +72,64 @@ ACTIVE_EMBY_DISPATCH_SEEN = {}
 ACTIVE_EMBY_DISPATCH_LOCK = threading.Lock()
 ACTIVE_EMBY_DISPATCH_DEBOUNCE_TIME = 10
 ACTIVE_EMBY_DISPATCH_SEEN_TTL = 120
+
+
+@webhook_bp.route('/api/emby/search', methods=['GET'])
+def search_emby_index():
+    query = str(request.args.get('query') or '').strip()
+    if not query:
+        return jsonify({'ready': True, 'items': []})
+    raw_types = str(request.args.get('types') or '')
+    item_types = [value.strip() for value in raw_types.split(',') if value.strip()]
+    try:
+        limit = int(request.args.get('limit') or 300)
+    except (TypeError, ValueError):
+        limit = 300
+    try:
+        result = emby_search_db.search(query, item_types, limit)
+        response = jsonify(result)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except Exception as exc:
+        logger.warning('ETK Emby search failed: %s', exc)
+        return jsonify({'ready': False, 'items': []}), 503
+
+
+@webhook_bp.route('/api/emby/search/index', methods=['POST'])
+def update_emby_search_index():
+    data = request.get_json(silent=True) or {}
+    mode = str(data.get('mode') or 'incremental').strip().lower()
+    token = str(data.get('token') or '').strip()
+    if token and len(token) > 100:
+        return jsonify({'ok': False, 'error': 'invalid token'}), 400
+    try:
+        if mode == 'start':
+            if not token:
+                return jsonify({'ok': False, 'error': 'token is required'}), 400
+            emby_search_db.start_rebuild(token)
+            return jsonify({'ok': True})
+        if mode == 'complete':
+            if not token:
+                return jsonify({'ok': False, 'error': 'token is required'}), 400
+            deleted = emby_search_db.complete_rebuild(token)
+            return jsonify({'ok': True, 'deleted': deleted})
+        if mode == 'abort':
+            if token:
+                emby_search_db.abort_rebuild(token)
+            return jsonify({'ok': True})
+        if mode not in {'batch', 'incremental', 'delete'}:
+            return jsonify({'ok': False, 'error': 'invalid mode'}), 400
+        items = data.get('items') or []
+        if not isinstance(items, list) or len(items) > 1000:
+            return jsonify({'ok': False, 'error': 'invalid items'}), 400
+        if mode == 'delete':
+            deleted = emby_search_db.delete_items(item.get('id') for item in items if isinstance(item, dict))
+            return jsonify({'ok': True, 'deleted': deleted})
+        indexed = emby_search_db.upsert_items(items)
+        return jsonify({'ok': True, 'indexed': indexed})
+    except Exception as exc:
+        logger.warning('ETK Emby search index update failed: %s', exc)
+        return jsonify({'ok': False, 'error': 'search index update failed'}), 503
 
 
 def _flush_active_series_notification(series_key: str):

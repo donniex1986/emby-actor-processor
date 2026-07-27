@@ -111,6 +111,40 @@ def init_db():
                     )
                 """)
 
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS emby_search_index (
+                        emby_item_id BIGINT PRIMARY KEY,
+                        item_type TEXT NOT NULL,
+                        title TEXT NOT NULL DEFAULT '',
+                        original_title TEXT NOT NULL DEFAULT '',
+                        series_name TEXT NOT NULL DEFAULT '',
+                        search_compact TEXT NOT NULL DEFAULT '',
+                        pinyin_full TEXT NOT NULL DEFAULT '',
+                        pinyin_initials TEXT NOT NULL DEFAULT '',
+                        search_ngrams TEXT[] NOT NULL DEFAULT '{}',
+                        pinyin_ngrams TEXT[] NOT NULL DEFAULT '{}',
+                        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS emby_search_rebuild_state (
+                        token TEXT PRIMARY KEY,
+                        started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_emby_search_ngrams
+                    ON emby_search_index USING GIN(search_ngrams)
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_emby_search_pinyin_ngrams
+                    ON emby_search_index USING GIN(pinyin_ngrams)
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_emby_search_type
+                    ON emby_search_index(item_type)
+                """)
+
                 logger.trace("  ➜ 正在创建 'emby_users' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS emby_users (
