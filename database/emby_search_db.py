@@ -234,15 +234,35 @@ def search(query: str, item_types: Optional[list[str]] = None, limit: int = 300)
                        EXISTS(
                            SELECT 1 FROM emby_search_rebuild_state
                            WHERE started_at >= NOW() - INTERVAL '30 minutes'
-                       ) AS rebuilding
+                       ) AS rebuilding,
+                       EXISTS(
+                           SELECT 1
+                           FROM emby_search_index
+                           WHERE updated_at < (
+                               SELECT MIN(started_at)
+                               FROM emby_search_rebuild_state
+                               WHERE started_at >= NOW() - INTERVAL '30 minutes'
+                           )
+                       ) AS has_previous_index
                 """
             )
             state = cursor.fetchone()
-            if not state["populated"] or state["rebuilding"]:
+            if not state["populated"] or (
+                state["rebuilding"] and not state["has_previous_index"]
+            ):
                 return {"ready": False, "items": []}
             cursor.execute(
                 """
                 SELECT emby_item_id, item_type, title, series_name,
+                       CASE
+                           WHEN item_type = 'Movie' THEN 0
+                           WHEN item_type = 'Series' THEN 1
+                           WHEN item_type = 'BoxSet' THEN 2
+                           WHEN item_type IN ('MusicAlbum', 'Audio', 'MusicVideo') THEN 3
+                           WHEN item_type = 'Person' THEN 4
+                           WHEN item_type = 'MusicArtist' THEN 5
+                           ELSE 6
+                       END AS type_priority,
                        CASE
                            WHEN search_compact = %(compact)s THEN 1000
                            WHEN search_compact LIKE %(compact)s || '%%' THEN 900
@@ -286,7 +306,7 @@ def search(query: str, item_types: Optional[list[str]] = None, limit: int = 300)
                           )
                       )
                   )
-                ORDER BY rank DESC, title ASC, emby_item_id ASC
+                ORDER BY type_priority ASC, rank DESC, title ASC, emby_item_id ASC
                 LIMIT %(query_limit)s
                 """,
                 {
