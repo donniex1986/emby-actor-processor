@@ -7426,7 +7426,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             r'(?i)\[S\d+\s+Recap(\s+\d+)?\]',
             r'(?i)Preview',
             r'(?i)\b(CDs|SPs|Scans|Bonus|映像特典|映像|specials|特典CD|Logo|Preview|/mv)\b',
-            r'(?i)\b(NC)?(片头|OP|SP|ED|Advice|Trailer|BDMenu|片尾|PV|CM|Preview|Info|EDPV|SongSpot|BDSpot)(\d{0,2}|_ALL)\b',
+            r'(?i)\b(NC)?(Disc|片头|OP|SP|ED|Advice|Trailer|BDMenu|片尾|PV|CM|Preview|Info|EDPV|SongSpot|BDSpot)(\d{0,2}|_ALL)\b',
             r'(?i)WiKi\.sample'
         ]
 
