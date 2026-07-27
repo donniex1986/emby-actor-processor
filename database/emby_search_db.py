@@ -253,6 +253,11 @@ def search(query: str, item_types: Optional[list[str]] = None, limit: int = 300)
                            WHEN %(pinyin_enabled)s AND %(initials)s = ANY(
                                string_to_array(pinyin_initials, '|')
                            ) THEN 450
+                           WHEN %(pinyin_enabled)s AND EXISTS (
+                               SELECT 1
+                               FROM unnest(string_to_array(pinyin_initials, '|')) AS variant
+                               WHERE POSITION(%(initials)s IN variant) > 0
+                           ) THEN 400
                            ELSE 300
                        END - CHAR_LENGTH(search_compact) AS rank
                 FROM emby_search_index
@@ -273,7 +278,11 @@ def search(query: str, item_types: Optional[list[str]] = None, limit: int = 300)
                           %(pinyin_enabled)s
                           AND (
                               POSITION(%(full)s IN pinyin_full) > 0
-                              OR %(initials)s = ANY(string_to_array(pinyin_initials, '|'))
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM unnest(string_to_array(pinyin_initials, '|')) AS variant
+                                  WHERE POSITION(%(initials)s IN variant) > 0
+                              )
                           )
                       )
                   )
