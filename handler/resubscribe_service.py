@@ -1333,7 +1333,7 @@ class WashingService:
         if new_level == -1:
             return _decision("REJECT", new_reason_detail)
         if new_level == 0:
-            return _decision("REJECT", f"槽位[{slot_name}] 未达标 ({new_reason_detail})")
+            return _decision("REJECT", f"槽位[{slot_name}] 未达标\n{new_reason_detail}")
 
         # 3. 取库内旧版原始流
         existing_raw_infos = cls._load_existing_raw_infos(
