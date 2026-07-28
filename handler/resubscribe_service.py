@@ -652,7 +652,7 @@ class WashingService:
                     return True, f"命中排除条件: 来源 ({norm_info.get('source')})"
             else:
                 if not match:
-                    return False, f"来源未命中 ({norm_info.get('source') or 'unknown'})"
+                    return False, f"来源未命中 ({'/'.join(str(source) for source in req_source)})"
 
         req_release_group = priority_rule.get("release_group") or priority_rule.get("release_groups") or []
         if req_release_group:
@@ -862,7 +862,7 @@ class WashingService:
 
     @classmethod
     def get_level(cls, norm_info: dict, priorities: list) -> tuple[int, str]:
-        has_normal_priority = False
+        fail_reasons = []
         normal_priority_index = 0
         
         for p_rule in priorities:
@@ -870,7 +870,6 @@ class WashingService:
             group_name = p_rule.get('_group_name', '未知规则组') # ★ 提取注入的规则组名称
             
             if not is_exclude:
-                has_normal_priority = True
                 normal_priority_index += 1
                 
             is_match, reason = cls._match_priority(norm_info, p_rule)
@@ -880,11 +879,14 @@ class WashingService:
                     return -1, f"规则组[{group_name}] {reason}" 
                 # ★ 格式化输出：规则组->电影->优先级 3
                 return normal_priority_index, f"规则组[{group_name}] -> 优先级 {normal_priority_index}"
-            
-        if not has_normal_priority:
+
+            if not is_exclude:
+                fail_reasons.append(f"规则组[{group_name}]-优先级{normal_priority_index}[{reason}]")
+
+        if not fail_reasons:
             return 0, "未配置任何有效的普通优先级规则"
 
-        return 0, "不满足所有优先级"
+        return 0, "\n".join(fail_reasons)
 
     @classmethod
     def _load_priorities(cls, db_media_type: str, target_cid: str) -> list:
