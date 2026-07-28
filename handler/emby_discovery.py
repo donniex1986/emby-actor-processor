@@ -1,20 +1,44 @@
 import os
+import ipaddress
 from urllib.parse import urlsplit
 
 import docker
+
+
+def validate_internal_service_url(value):
+    url = str(value or "").strip().rstrip("/")
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("地址必须以 http:// 或 https:// 开头")
+    try:
+        host_ip = ipaddress.ip_address(parsed.hostname)
+    except ValueError as e:
+        raise ValueError("地址必须使用内网 IP，不能使用域名") from e
+    if not host_ip.is_private or host_ip.is_loopback or host_ip.is_link_local or host_ip.is_unspecified:
+        raise ValueError("地址不是可用的内网 IP")
+    return url
+
+
+def resolve_etk_service_url(config):
+    return _resolve_published_service_url(config, 5257)
 
 
 def resolve_proxy_discovery_url(config):
     if not config.get("proxy_enabled"):
         raise ValueError("请先启用虚拟库反向代理")
 
-    source_url = str(config.get("etk_server_url") or "").strip()
+    return _resolve_published_service_url(config, int(config.get("proxy_port") or 0))
+
+
+def _resolve_published_service_url(config, service_port):
+    source_url = str(config.get("emby_server_url") or "").strip()
     parsed = urlsplit(source_url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise ValueError("请先配置有效的 STRM 链接地址")
+        raise ValueError("请先配置有效的 Emby 内网地址")
 
-    proxy_port = int(config.get("proxy_port") or 0)
-    if not 1 <= proxy_port <= 65535:
+    validate_internal_service_url(source_url)
+
+    if not 1 <= service_port <= 65535:
         raise ValueError("反向代理端口无效")
 
     client = docker.from_env()
@@ -34,34 +58,42 @@ def resolve_proxy_discovery_url(config):
 
         attrs = container.attrs or {}
         network_mode = str((attrs.get("HostConfig") or {}).get("NetworkMode") or "").lower()
-        direct_address = parsed.hostname in _container_network_addresses(attrs)
+        direct_address = _direct_container_address(attrs, parsed.hostname)
         host_port = (
-            proxy_port
+            service_port
             if network_mode == "host" or direct_address
-            else _published_proxy_port(attrs, proxy_port, parsed.hostname)
+            else _published_proxy_port(attrs, service_port, parsed.hostname)
         )
     except docker.errors.DockerException as e:
         raise RuntimeError("无法读取 ETK 容器端口映射，请确认已挂载 Docker socket") from e
     finally:
         client.close()
 
-    host = parsed.hostname
+    host = direct_address or parsed.hostname
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     return f"http://{host}:{host_port}"
 
 
-def _container_network_addresses(attrs):
+def _direct_container_address(attrs, target_host):
+    try:
+        target_ip = ipaddress.ip_address(target_host)
+    except ValueError:
+        return None
     networks = ((attrs.get("NetworkSettings") or {}).get("Networks") or {}).values()
-    return {
-        address
-        for network in networks
-        for address in (
-            str(network.get("IPAddress") or ""),
-            str(network.get("GlobalIPv6Address") or ""),
-        )
-        if address
-    }
+    for network in networks:
+        for address, prefix in (
+            (network.get("IPAddress"), network.get("IPPrefixLen")),
+            (network.get("GlobalIPv6Address"), network.get("GlobalIPv6PrefixLen")),
+        ):
+            if not address or prefix in (None, ""):
+                continue
+            try:
+                if target_ip in ipaddress.ip_network(f"{address}/{prefix}", strict=False):
+                    return str(address)
+            except ValueError:
+                continue
+    return None
 
 
 def _published_proxy_port(attrs, proxy_port, target_host):

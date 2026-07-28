@@ -12,7 +12,11 @@ import task_manager
 from logger_setup import frontend_log_queue
 import config_manager
 import handler.emby as emby
-from handler.emby_discovery import resolve_proxy_discovery_url
+from handler.emby_discovery import (
+    resolve_etk_service_url,
+    resolve_proxy_discovery_url,
+    validate_internal_service_url,
+)
 # 导入共享模块
 import extensions
 from extensions import admin_required, task_lock_required
@@ -25,6 +29,30 @@ import handler.github as github
 # 1. 创建蓝图
 system_bp = Blueprint('system', __name__, url_prefix='/api')
 logger = logging.getLogger(__name__)
+
+
+def _add_discovery_previews(config):
+    for key, resolver in (
+        ('etk_server_url_auto_detected', resolve_etk_service_url),
+        ('proxy_discovery_url_auto_detected', resolve_proxy_discovery_url),
+    ):
+        try:
+            config[key] = resolver(config)
+            config[f'{key}_error'] = ''
+        except (TypeError, ValueError, RuntimeError) as e:
+            config[key] = ''
+            config[f'{key}_error'] = str(e)
+
+    etk_manual = str(config.get(constants.CONFIG_OPTION_ETK_SERVER_URL_MANUAL) or '').strip()
+    proxy_manual = str(config.get(constants.CONFIG_OPTION_PROXY_DISCOVERY_URL_MANUAL) or '').strip()
+    config['etk_server_url_effective'] = etk_manual or config['etk_server_url_auto_detected']
+    config['proxy_discovery_url_effective'] = (
+        proxy_manual or config['proxy_discovery_url_auto_detected']
+        if config.get(constants.CONFIG_OPTION_PROXY_LOCK_DISCOVERY_ADDRESS)
+        else ''
+    )
+    return config
+
 
 PRO_AUTH_WORKER_URL = "https://auth.55565576.xyz"
 PRO_PRICING_FALLBACK_TIERS = [
@@ -184,6 +212,7 @@ def api_get_config():
     try:
         # ★★★ 确保这里正确解包了元组 ★★★
         current_config = _masked_config_payload(config_manager.APP_CONFIG)
+        _add_discovery_previews(current_config)
         
         if current_config:
             current_config['emby_server_id'] = extensions.EMBY_SERVER_ID
@@ -539,6 +568,9 @@ def api_save_config():
         if not new_config_data:
             return jsonify({"error": "请求体中未包含配置数据"}), 400
         new_config_data = _restore_masked_config_values(dict(new_config_data))
+        for key in tuple(new_config_data):
+            if key.endswith(('_auto_detected', '_auto_detected_error', '_effective')):
+                new_config_data.pop(key, None)
 
         # Emby 服务凭据只能通过管理员重新授权接口更新，避免地址、Token 和用户 ID 不一致。
         current_config = config_manager.APP_CONFIG or {}
@@ -567,6 +599,20 @@ def api_save_config():
         emby_url = new_config_data.get('emby_server_url')
         emby_api_key = new_config_data.get('emby_api_key')
         user_id = new_config_data.get('emby_user_id')
+
+        manual_etk_url = str(
+            new_config_data.get(constants.CONFIG_OPTION_ETK_SERVER_URL_MANUAL) or ''
+        ).strip().rstrip('/')
+        if manual_etk_url:
+            try:
+                new_config_data[constants.CONFIG_OPTION_ETK_SERVER_URL] = validate_internal_service_url(manual_etk_url)
+            except ValueError as e:
+                return jsonify({"error": f"手动 ETK 地址无效：{e}"}), 400
+        else:
+            try:
+                new_config_data[constants.CONFIG_OPTION_ETK_SERVER_URL] = resolve_etk_service_url(new_config_data)
+            except (TypeError, ValueError, RuntimeError) as e:
+                return jsonify({"error": f"无法自动获取 ETK 内网地址：{e}"}), 400
         
         valid_library_ids = None
         if emby_url and emby_api_key and user_id:
@@ -605,8 +651,15 @@ def api_save_config():
         new_config_data[constants.CONFIG_OPTION_PROXY_LOCK_DISCOVERY_ADDRESS] = lock_discovery
         discovery_url = ""
         if lock_discovery:
+            manual_discovery_url = str(
+                new_config_data.get(constants.CONFIG_OPTION_PROXY_DISCOVERY_URL_MANUAL) or ''
+            ).strip()
             try:
-                discovery_url = resolve_proxy_discovery_url(new_config_data)
+                discovery_url = (
+                    validate_internal_service_url(manual_discovery_url)
+                    if manual_discovery_url
+                    else resolve_proxy_discovery_url(new_config_data)
+                )
             except (TypeError, ValueError, RuntimeError) as e:
                 return jsonify({"error": f"无法锁定 Emby 反代地址：{e}"}), 400
 

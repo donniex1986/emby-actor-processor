@@ -49,10 +49,11 @@ export function useConfig() {
     try {
       // 使用最终确定的 payload 发送请求
       await axios.post('/api/config', payload);
+      const refreshed = await axios.get('/api/config');
       
       // 保存成功后，用我们刚刚成功保存的数据来更新全局的 configModel
       // 这样可以确保单例状态与后端保持同步
-      configModel.value = { ...configModel.value, ...payload };
+      configModel.value = refreshed.data;
 
       return true;
     } catch (err) {

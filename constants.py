@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "10.8.51"  # 更新版本号
+APP_VERSION = "10.8.52"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -65,6 +65,7 @@ CONFIG_OPTION_115_MEDIA_ROOT_CID = "p115_media_root_cid"         # 115网盘媒�
 CONFIG_OPTION_115_COPY_PLAY_ENABLED = "p115_copy_play_enabled"   # 是否启用复制播放
 CONFIG_OPTION_LOCAL_STRM_ROOT = "local_strm_root"                # 本地生成.strm的根目录
 CONFIG_OPTION_ETK_SERVER_URL = "etk_server_url"                  # ETK服务器地址 (用于strm文件内)
+CONFIG_OPTION_ETK_SERVER_URL_MANUAL = "etk_server_url_manual"    # 手动地址，优先于自动发现
 CONFIG_OPTION_115_ENABLE_SYNC_DELETE = "p115_enable_sync_delete" # 是否联动删除网盘文件
 CONFIG_OPTION_115_MEDIAINFO_ASSISTED_RECOGNITION = "p115_mediainfo_assisted_recognition" # 是否启用MediaInfo辅助识别
 CONFIG_OPTION_115_DOWNLOAD_SUBS = "p115_download_subs"           # 是否下载字幕文件
@@ -110,6 +111,7 @@ CONFIG_SECTION_REVERSE_PROXY = "ReverseProxy"
 CONFIG_OPTION_PROXY_ENABLED = "proxy_enabled"
 CONFIG_OPTION_PROXY_PORT = "proxy_port"
 CONFIG_OPTION_PROXY_LOCK_DISCOVERY_ADDRESS = "proxy_lock_discovery_address"
+CONFIG_OPTION_PROXY_DISCOVERY_URL_MANUAL = "proxy_discovery_url_manual"
 CONFIG_OPTION_PROXY_ALLOW_TRANSCODING = "proxy_allow_transcoding"
 CONFIG_OPTION_PROXY_MERGE_NATIVE = "proxy_merge_native_libraries"
 CONFIG_OPTION_PROXY_NATIVE_VIEW_SELECTION = "proxy_native_view_selection"  # List[str]

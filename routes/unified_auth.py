@@ -3,7 +3,6 @@
 import logging
 import secrets
 import time
-from urllib.parse import urlsplit
 from flask import Blueprint, request, jsonify, session
 import config_manager
 import constants
@@ -89,11 +88,12 @@ def _save_emby_service_authorization(auth_result):
 
 
 def _etk_origin_for_plugin():
-    configured = str(config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_ETK_SERVER_URL) or '').strip().rstrip('/')
-    configured_host = str(urlsplit(configured).hostname or '').lower() if configured else ''
-    if configured.startswith(('http://', 'https://')) and 'x' not in configured_host:
-        return configured
-    return request.host_url.rstrip('/')
+    from handler.emby_discovery import resolve_etk_service_url, validate_internal_service_url
+
+    manual = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_ETK_SERVER_URL_MANUAL)
+    if str(manual or '').strip():
+        return validate_internal_service_url(manual)
+    return resolve_etk_service_url(config_manager.APP_CONFIG)
 
 
 def _install_etk_plugin_after_authorization(auth_result):

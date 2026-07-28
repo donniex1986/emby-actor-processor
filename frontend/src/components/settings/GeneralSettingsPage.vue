@@ -203,6 +203,28 @@
                         </n-tooltip>
                       </n-form-item-grid-item>
 
+                      <n-form-item-grid-item label="反代地址（自动）" label-width="100">
+                        <n-input
+                          :value="configModel.proxy_discovery_url_auto_detected"
+                          :placeholder="configModel.proxy_discovery_url_auto_detected_error || '开启反代后自动获取'"
+                          readonly
+                          :disabled="!configModel.proxy_enabled"
+                        />
+                      </n-form-item-grid-item>
+
+                      <n-form-item-grid-item label="反代地址（手动）" path="proxy_discovery_url_manual" label-width="100">
+                        <n-input
+                          v-model:value="configModel.proxy_discovery_url_manual"
+                          placeholder="留空则使用自动地址"
+                          :disabled="!configModel.proxy_enabled || !configModel.proxy_lock_discovery_address"
+                        />
+                        <template #feedback>
+                          <n-text depth="3" style="font-size: 0.8em;">
+                            当前生效：{{ configModel.proxy_lock_discovery_address ? ((configModel.proxy_discovery_url_manual || configModel.proxy_discovery_url_auto_detected || '未获取') + (configModel.proxy_discovery_url_manual ? '（手动）' : '（自动）')) : '未锁定' }}
+                          </n-text>
+                        </template>
+                      </n-form-item-grid-item>
+
                       <!-- 3. 缺失占位符 -->
                       <n-form-item-grid-item label="缺失占位符" path="proxy_show_missing_placeholders" label-width="100">
                          <n-space align="center">
@@ -731,10 +753,18 @@
                       </template>
                     </n-form-item>
 
-                    <n-form-item label="STRM 链接地址" path="etk_server_url">
-                        <n-input v-model:value="configModel.etk_server_url" placeholder="http://192.168.X.X:5257" />
+                    <n-form-item label="ETK 地址（自动）">
+                        <n-input
+                          :value="configModel.etk_server_url_auto_detected"
+                          :placeholder="configModel.etk_server_url_auto_detected_error || '正在获取内网地址'"
+                          readonly
+                        />
+                    </n-form-item>
+
+                    <n-form-item label="ETK 地址（手动）" path="etk_server_url_manual">
+                        <n-input v-model:value="configModel.etk_server_url_manual" placeholder="留空则自动获取，例如 http://192.168.1.10:5257" />
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">仅支持 http(s) 访问地址，用于生成 PC 播放模式 STRM。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">当前生效：{{ (configModel.etk_server_url_manual || configModel.etk_server_url_auto_detected || '未获取') + (configModel.etk_server_url_manual ? '（手动）' : '（自动）') }}</n-text>
                         </template>
                     </n-form-item>
 
