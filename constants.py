@@ -98,7 +98,7 @@ DEFAULT_TELEGRAM_NOTIFICATION_TEMPLATES = {
     "transfer_success": "{{ action_title }}\n{{ title }}\n\n{{ episode_info }}\n{{ source }}🕒 *时间*: `{{ time }}`\n🎭 *类别*: {{ type }}\n{{ rating }}\n{{ overview }}",
     "playback": "{{ action }}\n\n👤 *用户*: `{{ user }}`\n🎬 *媒体*: {{ title }}\n📱 *设备*: `{{ device }}（{{ client }}）`\n🕒 *时间*: `{{ time }}`\n{{ overview }}",
     "recognize_fail": "⚠️ *识别失败通知*\n\n📁 *文件名*: `{{ file_name }}`\n❓ *原因*: {{ reason }}\n🕒 *时间*: `{{ time }}`\n\n💡 _文件已被移入「未识别」目录，请前往 WebUI 手动纠错。_",
-    "intercept_notify": "⛔ *洗版拦截通知*\n\n📁 *拦截文件*: {{ file_names }}\n🚫 *原因*: {{ reason }}\n🕒 *时间*: `{{ time }}`\n\n💡 _文件未达到优先级标准，已被标记「质检不合格」。_",
+    "intercept_notify": "⛔ *洗版拦截通知*\n\n📁 *拦截文件*: {{ file_names }}\n🚫 *原因*:\n{{ reason }}\n🕒 *时间*: `{{ time }}`\n\n💡 _文件未达到优先级标准，已被标记「质检不合格」。_",
     "hdhive_checkin": "【{{ status_icon }} *{{ status_title }}*】\n📢 *执行结果*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n🕒 *时间*: `{{ time }}`\n👤 *用户*: `{{ user }}`\n📍 *模式*: {{ mode }}\n✨ *状态*: {{ status }}\n\n📊 *签到详情*\n💬 *消息*: {{ message }}\n🎁 *奖励*: {{ reward }} 积分",
 }
 
