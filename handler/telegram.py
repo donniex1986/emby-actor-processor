@@ -1078,7 +1078,7 @@ def send_intercept_notification(file_names, reason: str):
             return
 
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        escaped_reason = escape_markdown(reason)
+        escaped_reason = f"\n{escape_markdown(reason)}"
 
         # 兼容单文件字符串传入
         if isinstance(file_names, str):
