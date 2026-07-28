@@ -460,24 +460,6 @@
                       </template>
                     </n-form-item>
 
-                    <!-- 定时扫描回溯天数 -->
-                    <n-form-item label="定时扫描回溯" path="monitor_scan_lookback_days">
-                      <n-input-number 
-                        v-model:value="configModel.monitor_scan_lookback_days" 
-                        :min="0" 
-                        :max="365" 
-                        placeholder="1" 
-                        style="width: 100%" 
-                      >
-                        <template #suffix>天</template>
-                      </n-input-number>
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          仅检查最近 N 天内创建或修改过的文件，设为 0 则全量扫描。
-                        </n-text>
-                      </template>
-                    </n-form-item>
-
                     <n-form-item label="单次处理上限" path="monitor_scan_max_tasks">
                       <n-input-number
                         v-model:value="configModel.monitor_scan_max_tasks"

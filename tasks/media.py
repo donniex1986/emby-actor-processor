@@ -2206,7 +2206,6 @@ def task_scan_monitor_folders(processor):
     monitor_enabled = processor.config.get(constants.CONFIG_OPTION_MONITOR_ENABLED)
     monitor_paths = processor.config.get(constants.CONFIG_OPTION_MONITOR_PATHS, [])
     monitor_extensions = processor.config.get(constants.CONFIG_OPTION_MONITOR_EXTENSIONS, constants.DEFAULT_MONITOR_EXTENSIONS)
-    lookback_days = processor.config.get(constants.CONFIG_OPTION_MONITOR_SCAN_LOOKBACK_DAYS, constants.DEFAULT_MONITOR_SCAN_LOOKBACK_DAYS)
     scan_max_tasks = processor.config.get(constants.CONFIG_OPTION_MONITOR_SCAN_MAX_TASKS, constants.DEFAULT_MONITOR_SCAN_MAX_TASKS)
     scan_batch_size = processor.config.get(constants.CONFIG_OPTION_MONITOR_SCAN_BATCH_SIZE, constants.DEFAULT_MONITOR_SCAN_BATCH_SIZE)
 
@@ -2227,16 +2226,16 @@ def task_scan_monitor_folders(processor):
     scan_limit_label = f"{scan_max_tasks} 个目录" if scan_max_tasks > 0 else "不限目录数"
     logger.info(
         f"  ➜ 开始执行监控目录查漏扫描 "
-        f"(回溯 {lookback_days} 天，单次处理 {scan_limit_label}，批量 {scan_batch_size})"
+        f"(单次处理 {scan_limit_label}，批量 {scan_batch_size})"
     )
 
     if not monitor_enabled or not monitor_paths:
         logger.info("  ➜ 实时监控未启用或未配置路径，跳过扫描。")
         return
 
-    task_manager.update_status_from_thread(1, "正在加载已入库文件名索引...")
-    known_filenames = media_db.get_all_asset_filenames()
-    logger.info(f"  ➜ 已加载 {len(known_filenames)} 个已入库文件名用于扫描去重。")
+    task_manager.update_status_from_thread(1, "正在加载已入库资产路径索引...")
+    known_asset_paths = media_db.get_all_asset_paths()
+    logger.info(f"  ➜ 已加载 {len(known_asset_paths)} 个已入库资产路径用于扫描去重。")
 
     valid_exts = set(ext.lower() for ext in monitor_extensions)
 
@@ -2246,11 +2245,8 @@ def task_scan_monitor_folders(processor):
 
     scan_count = 0
     trigger_count = 0
-    skipped_old_count = 0
     skipped_exists_count = 0 
     
-    now = time.time()
-    cutoff_time = now - (lookback_days * 24 * 3600)
 
     for root_path in monitor_paths:
         if processor.is_stop_requested() or limit_reached:
@@ -2294,32 +2290,21 @@ def task_scan_monitor_folders(processor):
                 if ext.lower() not in valid_exts: continue
                 
                 file_path = os.path.join(dirpath, filename)
+                normalized_file_path = str(file_path).replace('\\', '/').rstrip('/').casefold()
+                if normalized_file_path in known_asset_paths:
+                    skipped_exists_count += 1
+                    continue
                 
-                # ★★★ 第一道防线：时间过滤 (极速) ★★★
-                try:
-                    stat = os.stat(file_path)
-                    file_time = max(stat.st_mtime, stat.st_ctime)
-                    
-                    if lookback_days > 0 and file_time < cutoff_time:
-                        skipped_old_count += 1
-                        continue 
-                except OSError:
-                    continue 
-
                 scan_count += 1
                 if scan_count % 300 == 0:
                     time.sleep(0.05)
                     dynamic_progress = 50 + int((scan_count % 10000) / 10000 * 30)
                     task_manager.update_status_from_thread(
                         dynamic_progress, 
-                        f"扫描中... (已扫 {scan_count}, 跳过旧文件 {skipped_old_count}, 跳过已存 {skipped_exists_count})"
+                        f"扫描中... (已扫 {scan_count}, 跳过已存 {skipped_exists_count})"
                     )
 
                 # --- 判定逻辑 ---
-                if filename.lower() in known_filenames:
-                    skipped_exists_count += 1
-                    continue
-
                 dir_key = os.path.normpath(dirpath).lower()
                 if dir_key in processed_dirs:
                     continue
@@ -2367,7 +2352,8 @@ def task_scan_monitor_folders(processor):
                     try:
                         for name in os.listdir(directory):
                             sibling = os.path.join(directory, name)
-                            if name.lower().endswith('.strm') and name.lower() not in known_filenames:
+                            normalized_sibling = str(sibling).replace('\\', '/').rstrip('/').casefold()
+                            if name.lower().endswith('.strm') and normalized_sibling not in known_asset_paths:
                                 strm_files.append(sibling)
                     except Exception:
                         strm_files.append(file_path)

@@ -82,7 +82,6 @@
 | `monitor_enabled` | 启用实时监控 |
 | `monitor_paths` | 监控目录列表 |
 | `monitor_extensions` | 扩展名列表 |
-| `monitor_scan_lookback_days` | 回溯扫描天数 |
 | `monitor_exclude_dirs` | 排除路径 |
 
 ## General

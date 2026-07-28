@@ -1289,7 +1289,34 @@ def get_all_asset_filenames() -> set:
         logger.error(f"DB: 获取全量资产文件名集合失败: {e}", exc_info=True)
         return set()
 
-# 根据文件名反查媒体元数据（多版本精确版）    
+def get_all_asset_paths() -> set:
+    """Return normalized paths already represented in media asset records."""
+    sql = """
+        SELECT asset.value->>'path' AS path
+        FROM media_metadata m
+        CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+                WHEN jsonb_typeof(m.asset_details_json) = 'array' THEN m.asset_details_json
+                ELSE '[]'::jsonb
+            END
+        ) AS asset(value)
+        WHERE NULLIF(BTRIM(asset.value->>'path'), '') IS NOT NULL
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                paths = [
+                    row.get('path') if isinstance(row, dict) else row[0]
+                    for row in cursor.fetchall()
+                ]
+                return {_normalized_asset_path(path) for path in paths if path}
+    except Exception as e:
+        logger.error(f"DB: 获取全量资产路径集合失败: {e}", exc_info=True)
+        return set()
+
+
+# 根据文件名反查媒体元数据（多版本精确版）
 def get_media_info_by_filename(filename: str) -> Optional[Dict[str, Any]]:
     """
     【监控专用 - 多版本精确版】
