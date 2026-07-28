@@ -862,7 +862,7 @@ class WashingService:
 
     @classmethod
     def get_level(cls, norm_info: dict, priorities: list) -> tuple[int, str]:
-        fail_reasons = []
+        has_normal_priority = False
         normal_priority_index = 0
         
         for p_rule in priorities:
@@ -870,6 +870,7 @@ class WashingService:
             group_name = p_rule.get('_group_name', '未知规则组') # ★ 提取注入的规则组名称
             
             if not is_exclude:
+                has_normal_priority = True
                 normal_priority_index += 1
                 
             is_match, reason = cls._match_priority(norm_info, p_rule)
@@ -880,13 +881,10 @@ class WashingService:
                 # ★ 格式化输出：规则组->电影->优先级 3
                 return normal_priority_index, f"规则组[{group_name}] -> 优先级 {normal_priority_index}"
             
-            if not is_exclude:
-                fail_reasons.append(f"规则组[{group_name}]-优先级{normal_priority_index}[{reason}]")
-                
-        if not fail_reasons:
+        if not has_normal_priority:
             return 0, "未配置任何有效的普通优先级规则"
-            
-        return 0, " | ".join(fail_reasons)
+
+        return 0, "不满足所有优先级"
 
     @classmethod
     def _load_priorities(cls, db_media_type: str, target_cid: str) -> list:
