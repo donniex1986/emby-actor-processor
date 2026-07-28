@@ -7093,9 +7093,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             episode_source = 'filename'
                         else:
                             mid_match = re.search(r'(?:^|[ \-\_\[\(])(\d{1,4})(?:[ \.\-\_\]\)]|$)', clean_name)
-                    if mid_match:
-                        episode_num = int(mid_match.group(1))
-                        episode_source = 'filename'
+                            if mid_match:
+                                episode_num = int(mid_match.group(1))
+                                episode_source = 'filename'
 
             # 4. 终极兜底
             if season_num is None:
