@@ -2152,7 +2152,7 @@ def _prepare_deep_delete_response(sha1, expected_pick_code=''):
         (pc for pc in pickcodes if pc.lower() == anchor_pick_code.lower()),
         '',
     ) if anchor_pick_code else ''
-    if actual_type == 'Video' and not pickcodes and anchor_pick_code:
+    if actual_type in {'Movie', 'Video'} and not pickcodes and anchor_pick_code:
         pickcodes = [anchor_pick_code]
         matched_anchor_pick_code = anchor_pick_code
     if not pickcodes or not matched_anchor_pick_code:
