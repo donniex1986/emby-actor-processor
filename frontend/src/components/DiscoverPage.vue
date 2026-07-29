@@ -22,7 +22,7 @@
               </n-space>
               <n-space align="center" class="filter-field">
                 <label>类型:</label>
-                <n-radio-group v-model:value="mediaType" :disabled="isSearchMode">
+                <n-radio-group v-model:value="mediaType">
                   <n-radio-button value="movie" label="电影" />
                   <n-radio-button value="tv" label="电视剧" />
                 </n-radio-group>
