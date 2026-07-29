@@ -265,13 +265,37 @@ class P115MediaAnalyzerMixin:
                 str(direct_url)
             ]
 
-            proc = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=45
-            )
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=45
+                )
+            except subprocess.TimeoutExpired:
+                mp4_suffixes = (".mp4", ".m4v", ".mov")
+                if not str(original_name or "").lower().endswith(mp4_suffixes):
+                    raise
+
+                if not silent_log:
+                    logger.info(
+                        f"  ➜ [ffprobe] MP4 深度探测超时，改用容器元数据快速探测: {original_name}"
+                    )
+
+                fast_cmd = list(cmd)
+                fast_cmd[fast_cmd.index("-analyzeduration") + 1] = "0"
+                fast_cmd[fast_cmd.index("-probesize") + 1] = "32"
+                fast_cmd[fast_cmd.index("-print_format"):fast_cmd.index("-print_format")] = [
+                    "-max_probe_packets", "1"
+                ]
+                proc = subprocess.run(
+                    fast_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=45
+                )
 
             if proc.returncode != 0:
                 err = (proc.stderr or "").strip()
@@ -1560,6 +1584,9 @@ class P115MediaAnalyzerMixin:
             is_forced = bool(disposition.get("forced"))
 
             if codec_type == "video":
+                if disposition.get("attached_pic"):
+                    continue
+
                 title = tags.get("title") or ""
                 width = self._safe_int(s.get("width"))
                 height = self._safe_int(s.get("height"))
