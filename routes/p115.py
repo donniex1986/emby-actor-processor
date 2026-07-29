@@ -10,7 +10,7 @@ import re
 import time
 import random
 import secrets
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 import requests
 from flask import Blueprint, jsonify, request, redirect, Response, stream_with_context, current_app, session
 from extensions import admin_required, emby_login_required
@@ -62,6 +62,71 @@ def _build_deep_delete_file_snapshots(pickcodes):
             'parent_id': str(row.get('parent_id') or '').strip(),
         })
     return snapshots
+
+
+def _extract_p115_pickcodes_from_emby_item(item):
+    if not isinstance(item, dict):
+        return []
+    values = [item.get('Path')]
+    values.extend(
+        source.get('Path')
+        for source in (item.get('MediaSources') or [])
+        if isinstance(source, dict)
+    )
+    pickcodes = []
+    seen = set()
+    for value in values:
+        text = unquote(str(value or ''))
+        play_match = re.search(r'/api/p115/play/([^/?#]+)', text, flags=re.IGNORECASE)
+        if play_match:
+            pc_text = play_match.group(1).strip()
+            pc_key = pc_text.lower()
+            if pc_text and pc_key not in seen:
+                seen.add(pc_key)
+                pickcodes.append(pc_text)
+            continue
+
+        virtual_match = re.search(
+            r'/api/p115/virtual-play/[^/?#]+/([A-Fa-f0-9]{40})(?:[/?#]|$)',
+            text,
+            flags=re.IGNORECASE,
+        )
+        if virtual_match:
+            row = P115CacheManager.get_file_cache_by_sha1(virtual_match.group(1).upper()) or {}
+            pc_text = str(row.get('pick_code') or '').strip()
+            pc_key = pc_text.lower()
+            if pc_text and pc_key not in seen:
+                seen.add(pc_key)
+                pickcodes.append(pc_text)
+    return pickcodes
+
+
+def _collect_deep_delete_fallback_pickcodes(root_item_id, actual_type, anchor):
+    pickcodes = []
+    seen = set()
+
+    def add_from_item(item):
+        for pc in _extract_p115_pickcodes_from_emby_item(item):
+            pc_key = pc.lower()
+            if pc_key not in seen:
+                seen.add(pc_key)
+                pickcodes.append(pc)
+
+    add_from_item(anchor)
+    if actual_type not in {'Series', 'Season'}:
+        return pickcodes
+
+    children = emby.get_emby_library_items(
+        base_url=config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL),
+        api_key=config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY),
+        media_type_filter='Episode,Movie,Video',
+        user_id=config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_USER_ID),
+        library_ids=[root_item_id],
+        fields='Path,MediaSources,Type,Name',
+    ) or []
+    for child in children:
+        add_from_item(child)
+    return pickcodes
 
 
 def _normalize_p115_category_path(path):
@@ -2148,13 +2213,15 @@ def _prepare_deep_delete_response(sha1, expected_pick_code=''):
     if not anchor_pick_code:
         cache_row = P115CacheManager.get_file_cache_by_sha1(sha1) or {}
         anchor_pick_code = str(cache_row.get('pick_code') or '').strip()
+    if not pickcodes:
+        pickcodes = _collect_deep_delete_fallback_pickcodes(root_item_id, actual_type, anchor)
+        if not anchor_pick_code and pickcodes:
+            anchor_pick_code = pickcodes[0]
+
     matched_anchor_pick_code = next(
         (pc for pc in pickcodes if pc.lower() == anchor_pick_code.lower()),
         '',
     ) if anchor_pick_code else ''
-    if actual_type in {'Movie', 'Video'} and not pickcodes and anchor_pick_code:
-        pickcodes = [anchor_pick_code]
-        matched_anchor_pick_code = anchor_pick_code
     if not pickcodes or not matched_anchor_pick_code:
         return jsonify({'ok': False, 'error': 'delete scope identity mismatch'}), 409
     if actual_type in {'Movie', 'Episode', 'Video'}:
