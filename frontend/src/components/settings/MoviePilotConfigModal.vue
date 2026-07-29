@@ -211,24 +211,6 @@
                 <n-divider style="margin: 0" />
 
                 <div class="assistant-section">
-                  <div class="assistant-section-title">锁版策略</div>
-                  <n-grid :x-gap="12" :y-gap="12" :cols="2" responsive="screen">
-                    <n-grid-item>
-                      <div class="sub-label">锁版模式</div>
-                      <n-select v-model:value="formModel.series_version_lock_mode" :options="versionLockModeOptions" size="small" />
-                    </n-grid-item>
-                    <n-grid-item v-if="formModel.series_version_lock_mode === 'best'">
-                      <div class="sub-label">降级间隔</div>
-                      <n-input-number v-model:value="formModel.series_version_lock_decay_hours" size="small" :min="0">
-                        <template #suffix>小时</template>
-                      </n-input-number>
-                    </n-grid-item>
-                  </n-grid>
-                </div>
-
-                <n-divider style="margin: 0" />
-
-                <div class="assistant-section">
                   <div class="assistant-section-title">订阅清理</div>
                   <n-grid :x-gap="12" :y-gap="12" :cols="2" responsive="screen">
                     <n-grid-item>
@@ -367,11 +349,6 @@ const bestVersionTypeOptions = [
   { label: '完结洗版', value: 'completed_full' },
   { label: '全集洗版', value: 'tv' }
 ];
-const versionLockModeOptions = [
-  { label: '关闭', value: 'off' },
-  { label: '最佳版本', value: 'best' },
-  { label: '任意版本', value: 'any' }
-];
 const cleanupTypeOptions = [
   { label: '保留历史', value: 'none' },
   { label: '仅当前剧集', value: 'current' },
@@ -435,8 +412,6 @@ const defaultFormModel = () => ({
   movie_search_window_days: 1,
   movie_pause_days: 7,
   delay_subscription_days: 0,
-  series_version_lock_mode: 'off',
-  series_version_lock_decay_hours: 48,
   subscribe_assistant: defaultSubscribeAssistant()
 });
 

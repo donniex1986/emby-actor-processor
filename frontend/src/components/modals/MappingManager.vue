@@ -122,7 +122,7 @@
       <!-- Tab 5: 发布组 -->
       <n-tab-pane name="release_groups" tab="发布组">
         <n-alert type="info" :bordered="false" class="mb-4">
-          管理文件名识别、版本锁定和洗版规则共用的发布组标准名与别名正则。
+          管理文件名识别和洗版规则共用的发布组标准名与别名正则。
         </n-alert>
         <div class="list-header">
           <div class="col-handle"></div>

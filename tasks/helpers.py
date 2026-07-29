@@ -364,7 +364,7 @@ def normalize_release_group_name(value: str) -> str:
     return text
 
 def describe_release_group_match(filename: str) -> Dict[str, str]:
-    """返回发布组标准名和命中的尾部别名，用于锁版判断和日志展示。"""
+    """返回发布组标准名和命中的尾部别名，用于洗版判断和日志展示。"""
     token = extract_release_group_token_from_filename(filename)
     groups = extract_release_groups_from_filename(filename)
     standard = groups[0] if groups else ''

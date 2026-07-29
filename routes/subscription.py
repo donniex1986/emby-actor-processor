@@ -66,19 +66,8 @@ def get_mp_config():
         'movie_search_window_days': 1,
         'movie_pause_days': 7,
         'delay_subscription_days': 0,
-        'series_version_lock_mode': 'off',
-        'series_version_lock_decay_hours': 48,
         'subscribe_assistant': default_assistant_config_dict(),
     }
-    if isinstance(watchlist_cfg, dict):
-        default_cfg['series_version_lock_mode'] = watchlist_cfg.get(
-            'series_version_lock_mode',
-            default_cfg['series_version_lock_mode'],
-        )
-        default_cfg['series_version_lock_decay_hours'] = watchlist_cfg.get(
-            'series_version_lock_decay_hours',
-            default_cfg['series_version_lock_decay_hours'],
-        )
     default_cfg.update(cfg)
     for removed_key in (
         'link_delete_transfer_history',
@@ -86,6 +75,8 @@ def get_mp_config():
         'timeout_revive_days',
         'download_timeout_hours',
         'movie_protection_days',
+        'series_version_lock_mode',
+        'series_version_lock_decay_hours',
     ):
         default_cfg.pop(removed_key, None)
     default_cfg['subscribe_assistant'] = {
@@ -107,6 +98,8 @@ def save_mp_config():
         'timeout_revive_days',
         'download_timeout_hours',
         'movie_protection_days',
+        'series_version_lock_mode',
+        'series_version_lock_decay_hours',
     ):
         new_cfg.pop(removed_key, None)
     assistant = new_cfg.get('subscribe_assistant')
