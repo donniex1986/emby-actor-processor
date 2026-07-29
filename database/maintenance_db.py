@@ -303,6 +303,12 @@ def _cleanup_virtual_imports_for_media_scope(
         where.append("(parent_series_tmdb_id = %s OR tmdb_id = %s)")
         where.append("(season_number = %s OR season_number IS NULL)")
         args.extend([parent_tmdb_text, parent_tmdb_text, season_int])
+    elif item_type_text == 'Video':
+        if not tmdb_text:
+            return {'imports': 0, 'cache': 0, 'files': 0}
+        where.append("LOWER(item_type) IN ('video','home_video','homevideos')")
+        where.append("tmdb_id = %s")
+        args.append(tmdb_text)
     else:
         return {'imports': 0, 'cache': 0, 'files': 0}
 
@@ -1768,6 +1774,22 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                             reason='series_offline',
                             tmdb_id=tmdb_id,
                         )
+
+                elif db_item_type == 'Video':
+                    _cleanup_virtual_imports_for_media_scope(
+                        cursor,
+                        item_type='Video',
+                        tmdb_id=tmdb_id,
+                    )
+                    _append_shared_cleanup_context(
+                        shared_cleanup_contexts,
+                        scope='sha1',
+                        reason='video_offline',
+                        sha1s=removed_sha1s,
+                        pickcodes=removed_pcs,
+                        tmdb_id=tmdb_id,
+                        item_type=db_item_type,
+                    )
 
                 elif db_item_type == 'Season':
                     logger.info(f"  ➜ 第 {season_num} 季已完全删除，正在检查父剧集 (TMDB: {parent_tmdb_id})...")

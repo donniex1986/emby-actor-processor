@@ -2118,7 +2118,7 @@ def _prepare_deep_delete_response(sha1, expected_pick_code=''):
     requested_type = str(payload.get('item_type') or '').strip().title()
     if not re.fullmatch(r'\d{1,20}', root_item_id) or not re.fullmatch(r'\d{1,20}', anchor_item_id):
         return jsonify({'ok': False, 'error': 'invalid item id'}), 400
-    if requested_type not in {'Movie', 'Series', 'Season', 'Episode'}:
+    if requested_type not in {'Movie', 'Series', 'Season', 'Episode', 'Video'}:
         return jsonify({'ok': False, 'error': 'unsupported item type'}), 400
 
     anchor = get_verified_emby_item_for_cache(
@@ -2152,9 +2152,12 @@ def _prepare_deep_delete_response(sha1, expected_pick_code=''):
         (pc for pc in pickcodes if pc.lower() == anchor_pick_code.lower()),
         '',
     ) if anchor_pick_code else ''
+    if actual_type == 'Video' and not pickcodes and anchor_pick_code:
+        pickcodes = [anchor_pick_code]
+        matched_anchor_pick_code = anchor_pick_code
     if not pickcodes or not matched_anchor_pick_code:
         return jsonify({'ok': False, 'error': 'delete scope identity mismatch'}), 409
-    if actual_type in {'Movie', 'Episode'}:
+    if actual_type in {'Movie', 'Episode', 'Video'}:
         pickcodes = [matched_anchor_pick_code]
         delete_scope = '精确版本'
     else:
