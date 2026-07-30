@@ -575,31 +575,37 @@ class WatchlistProcessor:
                         if -30 <= days_diff <= 7:
                             revived_count += 1
                             status_desc = "已开播" if days_diff <= 0 else f"{days_diff}天后开播"
-                            logger.info(f"  ➜ 发现《{series_name}》第 {new_season_num} 季{status_desc}，触发复活订阅流程。")
+                            logger.info(f"  ➜ 发现《{series_name}》第 {new_season_num} 季{status_desc}，触发复活流程。")
 
                             if is_updated_old_season:
-                                mp_wash_kwargs = _watchlist_mp_wash_kwargs(watchlist_cfg)
-                                sub_success = moviepilot.subscribe_series_to_moviepilot(
-                                    series_info={'tmdb_id': tmdb_id, 'title': series_name},
-                                    season_number=new_season_num,
-                                    config=self.config,
-                                    **mp_wash_kwargs
+                                watchlist_db.update_specific_season_total_episodes(
+                                    tmdb_id,
+                                    new_season_num,
+                                    tmdb_ep_count,
+                                    locked=False
                                 )
-                                if sub_success:
-                                    watchlist_db.update_specific_season_total_episodes(
-                                        tmdb_id,
-                                        new_season_num,
-                                        tmdb_ep_count,
-                                        locked=False
-                                    )
-                                    watchlist_db.revive_completed_series_and_season(tmdb_id, new_season_num)
-                                    season_info['episode_count'] = tmdb_ep_count
-                                    self._update_watchlist_entry(tmdb_id, series_name, {
-                                        "watchlist_tmdb_status": "Returning Series"
-                                    })
-                                    logger.info(f"  ➜ 已为动画《{series_name}》第 {new_season_num} 季直接提交 MoviePilot 订阅，并恢复追剧状态。")
-                                else:
-                                    logger.error(f"  ➜ 动画《{series_name}》第 {new_season_num} 季提交 MoviePilot 订阅失败。")
+                                watchlist_db.sync_seasons_watching_status(tmdb_id)
+                                season_info['episode_count'] = tmdb_ep_count
+                                season_tmdb_id = str(season_info.get('id'))
+                                request_db.set_media_status_wanted(
+                                    tmdb_ids=season_tmdb_id,
+                                    item_type='Season',
+                                    source={"type": "revived_season", "reason": "watchlist_revival", "item_id": tmdb_id},
+                                    media_info_list=[{
+                                        'tmdb_id': season_tmdb_id,
+                                        'item_type': 'Season',
+                                        'title': f"{series_name} - {season_info.get('name', f'第 {new_season_num} 季')}",
+                                        'release_date': air_date_str,
+                                        'poster_path': season_info.get('poster_path'),
+                                        'season_number': new_season_num,
+                                        'parent_series_tmdb_id': tmdb_id,
+                                        'overview': season_info.get('overview')
+                                    }]
+                                )
+                                logger.info(
+                                    f"  ➜ 动画《{series_name}》第 {new_season_num} 季总集数已更新为 {tmdb_ep_count}，"
+                                    "季状态已按本地集齐情况重新计算，并已加入统一订阅队列。"
+                                )
                                 break
                             
                             # 1. 构造媒体信息

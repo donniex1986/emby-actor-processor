@@ -196,11 +196,11 @@ def set_media_status_wanted(
                             media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'PAUSED')
                             
                             -- 2. ★★★ 智能防线：已入库项目保护 ★★★
-                            -- 规则：如果已入库，则禁止更新，除非是 洗版 或 缺集扫描
+                            -- 规则：如果已入库，则禁止更新，除非是洗版、缺集扫描或新季复活
                             AND (
                                 media_metadata.in_library = FALSE
                                 OR
-                                EXCLUDED.subscription_sources_json->0->>'type' IN ('resubscribe', 'gap_scan')
+                                EXCLUDED.subscription_sources_json->0->>'type' IN ('resubscribe', 'gap_scan', 'revived_season')
                             )
                             
                             AND (
