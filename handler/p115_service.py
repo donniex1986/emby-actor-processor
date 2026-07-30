@@ -6072,6 +6072,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         result.append({'name': str(item)})
                 return result
 
+            country_codes = []
+            for country in _json_value(row.get('countries_json'), []):
+                code = country.get('iso_3166_1') if isinstance(country, dict) else country
+                if code:
+                    country_codes.append(str(code))
+
             title = row.get('title') or row.get('original_title') or self.original_title
             original_title = row.get('original_title') or title
             details = {
@@ -6088,11 +6094,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 'production_companies': _names(row.get('production_companies_json')),
                 'networks': _names(row.get('networks_json')),
                 'keywords': {'results': _names(row.get('keywords_json'))},
-                'production_countries': _names(row.get('countries_json')),
-                'origin_country': [
-                    item.get('iso_3166_1') for item in _json_value(row.get('countries_json'), [])
-                    if isinstance(item, dict) and item.get('iso_3166_1')
-                ],
+                'production_countries': [{'iso_3166_1': code} for code in country_codes],
+                'origin_country': country_codes,
                 'original_title': original_title,
                 'original_name': original_title,
                 'runtime': row.get('runtime_minutes') if self.media_type == 'movie' else None,
