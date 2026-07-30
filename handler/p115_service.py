@@ -958,6 +958,13 @@ class P115OpenAPIClient:
         fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
         return self._do_request("POST", url, data={"file_ids": fids_str})
 
+    def rb_list(self, limit=100, offset=0):
+        url = f"{self.base_url}/open/rb/list"
+        return self._do_request("GET", url, params={
+            "limit": int(limit),
+            "offset": int(offset),
+        })
+
     def rb_del(self, tids=None):
         url = f"{self.base_url}/open/rb/del"
         data = {}
@@ -2768,7 +2775,57 @@ class P115Service:
                 except Exception as e:
                     logger.debug(f"  ➜ [115] mkdir 已存在后回查目录失败: parent={parent_cid}, name={name}, err={e}")
 
+                # /files/search 在删除后重建的目录上可能暂时漏结果；/files 的
+                # search_value 在同一时段仍可能返回该活动目录。
+                try:
+                    search_res = self.fs_files({
+                        "cid": parent_cid,
+                        "search_value": name,
+                        "limit": 100,
+                        "show_dir": 1,
+                        "record_open_time": 0,
+                        "count_folders": 0,
+                    })
+                    for item in search_res.get("data", []):
+                        item_name = item.get("fn") or item.get("n") or item.get("file_name") or item.get("name")
+                        item_fc = str(item.get("fc") if item.get("fc") is not None else item.get("type"))
+                        item_cid = item.get("fid") or item.get("file_id") or item.get("id") or item.get("cid")
+                        if item_name == name and item_fc == "0" and item_cid:
+                            if _p115_is_visible_child_dir(self, parent_cid, name, item_cid):
+                                return str(item_cid)
+                except Exception as e:
+                    logger.debug(f"  ➜ [115] mkdir 已存在后目录列表回查失败: parent={parent_cid}, name={name}, err={e}")
+
                 return None
+
+            def _find_recycle_bin_dir(self, parent_cid, name):
+                """Return the unique matching deleted directory ID, never guessing on ambiguity."""
+                offset = 0
+                limit = 100
+                matches = []
+                while True:
+                    resp = self.rb_list(limit=limit, offset=offset)
+                    if not _p115_success(resp):
+                        logger.warning(f"  ➜ [115回收站] 查询失败，跳过自动清理: {_p115_error_text(resp)}")
+                        return None
+                    data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+                    entries = [item for item in data.values() if isinstance(item, dict) and item.get("id")]
+                    for item in entries:
+                        if (
+                            str(item.get("type") or "") == "2"
+                            and str(item.get("file_name") or "") == name
+                            and str(item.get("cid") or "") == str(parent_cid)
+                            and str(item.get("status") or "0") == "0"
+                        ):
+                            matches.append(str(item["id"]))
+                    if len(matches) > 1:
+                        logger.warning(f"  ➜ [115回收站] 同名目录匹配到多个条目，拒绝自动删除: parent={parent_cid}, name={name}")
+                        return None
+                    count = int(data.get("count") or 0)
+                    offset += limit
+                    if not entries or offset >= count:
+                        break
+                return matches[0] if len(matches) == 1 else None
 
 
             def fs_mkdir(self, name, pid):
@@ -2875,6 +2932,43 @@ class P115Service:
                                     },
                                     "_from_exists_recovery": api_name
                                 }
+
+                            recycle_tid = self._find_recycle_bin_dir(parent_cid, folder_name)
+                            if recycle_tid:
+                                delete_resp = self.rb_del([recycle_tid])
+                                if _p115_success(delete_resp):
+                                    logger.info(
+                                        f"  ➜ [115回收站] 已永久删除阻塞重建的目录，准备重试: "
+                                        f"parent={parent_cid}, name={folder_name}, tid={recycle_tid}"
+                                    )
+                                    time.sleep(1)
+                                    retry_resp = api_client.fs_mkdir(folder_name, parent_cid)
+                                    if retry_resp and retry_resp.get("state"):
+                                        new_cid = (
+                                            retry_resp.get("cid")
+                                            or retry_resp.get("file_id")
+                                            or retry_resp.get("id")
+                                            or retry_resp.get("data", {}).get("file_id")
+                                            or retry_resp.get("data", {}).get("cid")
+                                            or retry_resp.get("data", {}).get("id")
+                                        )
+                                        if new_cid:
+                                            new_cid = str(new_cid)
+                                            P115CacheManager.save_cid(new_cid, parent_cid, folder_name)
+                                            retry_resp["cid"] = new_cid
+                                            retry_resp.setdefault("data", {})
+                                            retry_resp["data"]["file_id"] = new_cid
+                                            retry_resp["data"]["cid"] = new_cid
+                                        return retry_resp
+                                    logger.warning(
+                                        f"  ➜ [115回收站] 删除目录后重建仍失败: "
+                                        f"parent={parent_cid}, name={folder_name}, err={_p115_error_text(retry_resp)}"
+                                    )
+                                    return retry_resp or resp
+                                logger.warning(
+                                    f"  ➜ [115回收站] 删除阻塞目录失败，停止重试: "
+                                    f"parent={parent_cid}, name={folder_name}, tid={recycle_tid}, err={_p115_error_text(delete_resp)}"
+                                )
 
                             logger.warning(f"  ➜ [115] 目录已存在但暂未回查到 CID: parent={parent_cid}, name={folder_name}")
                             return resp
@@ -3011,6 +3105,14 @@ class P115Service:
                 # 清空回收站是 OpenAPI 独有，强制 OpenAPI，不参与 Cookie 优先级。
                 self._check_openapi()
                 return self._call_api('rb_del', tids, normalizer=_p115_normalize_common_response, force_openapi=True)
+
+            def rb_list(self, limit=100, offset=0):
+                self._check_openapi()
+                return self._call_api(
+                    'rb_list', limit, offset,
+                    normalizer=_p115_normalize_common_response,
+                    force_openapi=True,
+                )
             
             def life_behavior_detail(self, payload=None):
                 # 生活事件仍是 Cookie/webapi 能力。
