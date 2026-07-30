@@ -30,34 +30,52 @@ task_queue = Queue()
 task_worker_thread: Optional[threading.Thread] = None
 task_worker_lock = threading.Lock()
 _pending_organize_lock = threading.Lock()
-_pending_organize_requested = False
+_pending_organize_sources = []
+
+_ORGANIZE_SOURCE_LABELS = {
+    'tg_share_import': 'TG分享转存',
+    'tg_offline_download': 'TG离线下载',
+    'tg_channel_share': 'TG频道监听转存',
+    'tg_channel_offline': 'TG频道监听离线下载',
+    'hdhive_download': '影巢下载',
+    'shared_resource': '共享资源导入',
+    'gc_remaining_media': 'GC补跑',
+    'subscribe_assistant_reconcile': '订阅助手对账',
+    'pending_after_task': '任务队列补跑',
+}
+
+def _get_organize_source_label(reason: str = '') -> str:
+    reason = (reason or '').strip()
+    if reason.startswith(('share:', 'rapid:')):
+        return _ORGANIZE_SOURCE_LABELS['shared_resource']
+    return _ORGANIZE_SOURCE_LABELS.get(reason, reason or '自动触发')
 
 def _mark_pending_organize(reason: str = '') -> None:
-    global _pending_organize_requested
+    source_label = _get_organize_source_label(reason)
     with _pending_organize_lock:
-        if not _pending_organize_requested:
-            logger.info(f"  ➜ [115整理] 当前有任务运行，已合并为待执行整理请求{f'：{reason}' if reason else ''}。")
+        if not _pending_organize_sources:
+            logger.info(f"  ➜ [115整理] 当前有任务运行，已合并为待执行整理请求：{source_label}。")
         else:
-            logger.debug(f"  ➜ [115整理] 已存在待执行整理请求，本次合并{f'：{reason}' if reason else ''}。")
-        _pending_organize_requested = True
+            logger.debug(f"  ➜ [115整理] 已存在待执行整理请求，本次合并：{source_label}。")
+        if source_label not in _pending_organize_sources:
+            _pending_organize_sources.append(source_label)
 
-def _consume_pending_organize() -> bool:
-    global _pending_organize_requested
+def _consume_pending_organize() -> list[str]:
     with _pending_organize_lock:
-        if not _pending_organize_requested:
-            return False
-        _pending_organize_requested = False
-        return True
+        sources = list(_pending_organize_sources)
+        _pending_organize_sources.clear()
+        return sources
 
 def _schedule_pending_organize_if_needed(delay: float = 1.0) -> None:
-    if not _consume_pending_organize():
+    sources = _consume_pending_organize()
+    if not sources:
         return
 
     def _runner():
         if delay and delay > 0:
             import time
             time.sleep(delay)
-        trigger_115_organize_task(reason='pending_after_task')
+        trigger_115_organize_task(reason='、'.join(sources))
 
     threading.Thread(target=_runner, name='pending-115-organize-submit', daemon=True).start()
 
@@ -271,27 +289,29 @@ def clear_task_queue():
 def trigger_115_organize_task(reason: str = ''):
     """
     【公共接口】触发 115 网盘整理任务。
-    通过 Telegram 分享链接后调用此函数来唤醒后台整理任务。
+    reason 用于标记触发整理任务的上游来源。
     """
     try:
         # 延迟导入避免循环依赖
         from tasks.core import task_scan_and_organize_115
+        source_label = _get_organize_source_label(reason)
+        task_name = f"115网盘整理({source_label})"
         
         # 使用 submit_task 提交任务，processor_type 为 'media'
         result = submit_task(
             task_scan_and_organize_115, 
-            "115网盘整理(TG触发)", 
+            task_name,
             processor_type='media'
         )
         
         if result:
-            logger.info("  ➜ [TG交互] 115 整理任务已成功提交到后台队列。")
+            logger.info(f"  ➜ [115整理] {source_label}触发的整理任务已成功提交到后台队列。")
         else:
-            _mark_pending_organize(reason or 'task_busy')
+            _mark_pending_organize(source_label)
         
         return result
     except Exception as e:
-        logger.error(f"  ➜ [TG交互] 触发 115 整理任务时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ [115整理] 触发整理任务时发生错误: {e}", exc_info=True)
         return False
 def trigger_shared_resource_maintenance_task():
     """【公共接口】触发共享资源自动维护任务。"""

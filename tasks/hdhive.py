@@ -104,7 +104,11 @@ def task_download_from_hdhive(api_key=None, slug=None, tmdb_id=None, media_type=
             if has_new_file:
                 try:
                     import threading
-                    threading.Timer(1.0, task_manager.trigger_115_organize_task).start()
+                    threading.Timer(
+                        1.0,
+                        task_manager.trigger_115_organize_task,
+                        kwargs={'reason': 'hdhive_download'},
+                    ).start()
                     logger.info("  ➜ 已成功唤醒 115 智能整理任务！")
                 except Exception as e:
                     logger.error(f"  ➜ 唤醒整理任务失败: {e}")

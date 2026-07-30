@@ -1206,7 +1206,11 @@ def _submit_tg_offline_links(client, links, target_cid, task, log_prefix):
         try:
             import task_manager
             import threading
-            threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
+            threading.Timer(
+                10.0,
+                task_manager.trigger_115_organize_task,
+                kwargs={'reason': 'tg_offline_download'},
+            ).start()
         except Exception:
             pass
         return True
@@ -1483,7 +1487,11 @@ def _process_tg_queue():
                         try:
                             import task_manager
                             import threading
-                            threading.Timer(3.0, task_manager.trigger_115_organize_task).start()
+                            threading.Timer(
+                                3.0,
+                                task_manager.trigger_115_organize_task,
+                                kwargs={'reason': 'tg_channel_share'},
+                            ).start()
                         except: pass
                     else:
                         err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
@@ -1507,7 +1515,11 @@ def _process_tg_queue():
                     try:
                         import task_manager
                         import threading
-                        threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
+                        threading.Timer(
+                            10.0,
+                            task_manager.trigger_115_organize_task,
+                            kwargs={'reason': 'tg_channel_offline'},
+                        ).start()
                     except: pass
                 else:
                     err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'

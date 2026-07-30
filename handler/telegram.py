@@ -2765,7 +2765,11 @@ def _handle_incoming_message(message: dict):
                 send_telegram_message(chat_id, escape_markdown("✅ *分享链接转存成功！*\n系统已自动触发整理任务。"))
                 try:
                     import task_manager
-                    threading.Timer(5.0, task_manager.trigger_115_organize_task).start()
+                    threading.Timer(
+                        5.0,
+                        task_manager.trigger_115_organize_task,
+                        kwargs={'reason': 'tg_share_import'},
+                    ).start()
                 except Exception as e:
                     logger.error(f"  ➜ 唤醒整理任务失败: {e}")
             else:
@@ -2785,7 +2789,11 @@ def _handle_incoming_message(message: dict):
                 send_telegram_message(chat_id, escape_markdown("✅ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。"))
                 try:
                     import task_manager
-                    threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
+                    threading.Timer(
+                        10.0,
+                        task_manager.trigger_115_organize_task,
+                        kwargs={'reason': 'tg_offline_download'},
+                    ).start()
                 except: pass
             else:
                 err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
