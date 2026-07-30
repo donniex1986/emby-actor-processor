@@ -59,7 +59,6 @@ FINGERPRINT_MAX_CONSECUTIVE_MISSES = 40
 FINGERPRINT_MIN_MATCH_RATIO = 0.85
 FINGERPRINT_ANCHOR_WIDTH = 3
 FINGERPRINT_CACHE_TOLERANCE_SECONDS = 5
-FINGERPRINT_EXTRACT_MAX_FAILURES = 3
 FINGERPRINT_ANCHOR_MASKS = (
     0x0F0F0F0F,
     0xF0F0F0F0,
@@ -1435,38 +1434,14 @@ def _record_fingerprint_extract_failure(
         logger.debug("  ➜ [片头片尾提取] 记录指纹提取失败次数失败 %s/%s: %s", kind, failure_key, e)
         return 0
 
-    if attempts >= FINGERPRINT_EXTRACT_MAX_FAILURES:
-        terminal_reason = (
-            'credits_fingerprint_extract_failed'
-            if kind == FINGERPRINT_KIND_CREDITS
-            else 'intro_fingerprint_extract_failed'
-        )
-        _mark_detection_failure(
-            ref,
-            kind,
-            scope='episode',
-            reason=terminal_reason,
-            sample_count=attempts,
-            episode_count=0,
-        )
-        logger.warning(
-            "  ➜ [片头片尾提取] 《%s》S%02dE%02d %s音频指纹连续提取失败 %s 次，当前算法版本不再自动重试。",
-            ref.series_title,
-            ref.season_number,
-            ref.episode_number,
-            "片尾" if kind == FINGERPRINT_KIND_CREDITS else "片头",
-            attempts,
-        )
-    else:
-        logger.debug(
-            "  ➜ [片头片尾提取] 《%s》S%02dE%02d %s音频指纹提取失败计数：%s/%s。",
-            ref.series_title,
-            ref.season_number,
-            ref.episode_number,
-            "片尾" if kind == FINGERPRINT_KIND_CREDITS else "片头",
-            attempts,
-            FINGERPRINT_EXTRACT_MAX_FAILURES,
-        )
+    logger.debug(
+        "  ➜ [片头片尾提取] 《%s》S%02dE%02d %s音频指纹提取失败计数：%s。",
+        ref.series_title,
+        ref.season_number,
+        ref.episode_number,
+        "片尾" if kind == FINGERPRINT_KIND_CREDITS else "片头",
+        attempts,
+    )
     return attempts
 
 

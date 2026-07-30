@@ -656,6 +656,29 @@ def init_db():
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_intro_fingerprint_failures_kind ON p115_intro_fingerprint_failures(kind, algorithm_version)")
 
+                fingerprint_failure_migration_key = 'migration_clear_fingerprint_extract_failures_v1'
+                cursor.execute(
+                    "SELECT 1 FROM app_settings WHERE setting_key = %s",
+                    (fingerprint_failure_migration_key,),
+                )
+                if not cursor.fetchone():
+                    cursor.execute(
+                        """
+                        DELETE FROM p115_intro_detection_failures
+                        WHERE reason IN ('intro_fingerprint_extract_failed', 'credits_fingerprint_extract_failed')
+                        """
+                    )
+                    cleared_rows = cursor.rowcount
+                    cursor.execute(
+                        """
+                        INSERT INTO app_settings (setting_key, value_json, last_updated_at)
+                        VALUES (%s, 'true'::jsonb, NOW())
+                        ON CONFLICT (setting_key) DO NOTHING
+                        """,
+                        (fingerprint_failure_migration_key,),
+                    )
+                    logger.info("  ➜ [数据库迁移] 已清理 %s 条声纹提取失败的错误永久标记。", cleared_rows)
+
                 logger.trace("  ➜ 正在创建 'p115_upload_records' 表 (115 上传任务与完成记录)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS p115_upload_records (
