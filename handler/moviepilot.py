@@ -548,6 +548,7 @@ def subscribe_series_to_moviepilot(
     config: Dict[str, Any] = None,
     best_version: Optional[int] = None,
     best_version_full: Optional[int] = None,
+    start_episode: Optional[int] = None,
     consume_quota: bool = False,
 ) -> bool:
     """订阅单季或整部剧集"""
@@ -563,6 +564,8 @@ def subscribe_series_to_moviepilot(
     }
     if season_number is not None:
         payload["season"] = season_number
+    if start_episode is not None and int(start_episode) > 0:
+        payload["start_episode"] = int(start_episode)
     
     if best_version is not None:
         payload["best_version"] = best_version

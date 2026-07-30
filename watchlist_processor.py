@@ -587,7 +587,7 @@ class WatchlistProcessor:
                                 watchlist_db.sync_seasons_watching_status(tmdb_id)
                                 season_info['episode_count'] = tmdb_ep_count
                                 season_tmdb_id = str(season_info.get('id'))
-                                request_db.set_media_status_wanted(
+                                request_db.set_media_status_subscribed(
                                     tmdb_ids=season_tmdb_id,
                                     item_type='Season',
                                     source={"type": "revived_season", "reason": "watchlist_revival", "item_id": tmdb_id},
@@ -604,7 +604,7 @@ class WatchlistProcessor:
                                 )
                                 logger.info(
                                     f"  ➜ 动画《{series_name}》第 {new_season_num} 季总集数已更新为 {tmdb_ep_count}，"
-                                    "季状态已按本地集齐情况重新计算，并已加入统一订阅队列。"
+                                    "季状态已按本地集齐情况重新计算，并已加入已订阅补库队列。"
                                 )
                                 break
                             

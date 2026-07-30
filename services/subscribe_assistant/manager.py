@@ -2097,6 +2097,28 @@ class SubscribeAssistantManager:
             logger.debug("  ➜ [订阅助手] 查询本地在库集数失败：tmdb=%s, season=%s, err=%s", tmdb_id, season, e)
             return 0
 
+    def _local_in_library_episode_max(self, tmdb_id: str, season: int) -> int:
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT MAX(episode_number) AS episode_number
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND season_number = %s
+                          AND item_type = 'Episode'
+                          AND in_library = TRUE
+                          AND episode_number IS NOT NULL
+                        """,
+                        (str(tmdb_id), int(season)),
+                    )
+                    row = cursor.fetchone() or {}
+            return _safe_int(row.get("episode_number"))
+        except Exception as e:
+            logger.debug("  ➜ [订阅助手] 查询本地已入库最大集号失败：tmdb=%s, season=%s, err=%s", tmdb_id, season, e)
+            return 0
+
     def _create_subscription(
         self,
         tmdb_id: str,
@@ -2106,6 +2128,10 @@ class SubscribeAssistantManager:
         consume_quota: bool = False,
     ) -> Optional[dict]:
         payload_kwargs = self._subscription_wash_kwargs(decision)
+        if _safe_int(payload_kwargs.get("best_version_full")) != 1:
+            local_episode_max = self._local_in_library_episode_max(tmdb_id, season)
+            if local_episode_max > 0:
+                payload_kwargs["start_episode"] = local_episode_max + 1
         if not moviepilot.subscribe_series_to_moviepilot(
             {"title": series_name, "tmdb_id": tmdb_id},
             season,
