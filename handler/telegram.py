@@ -955,6 +955,15 @@ def send_playback_notification(data: dict):
         display_item_name = original_item_name
         if original_item_type == "Episode" and item.get("SeriesName"):
             display_item_name = f"{item.get('SeriesName')} - {original_item_name}"
+            try:
+                season_number = int(item.get("ParentIndexNumber"))
+                episode_number = int(item.get("IndexNumber"))
+                if season_number > 0 and episode_number > 0:
+                    display_item_name = (
+                        f"{item.get('SeriesName')} - S{season_number:02d}E{episode_number:02d} {original_item_name}"
+                    )
+            except (TypeError, ValueError):
+                pass
             
         # --- 本地数据库提取图片和剧情兜底 (极速，无网络请求依赖) ---
         photo_url = None
