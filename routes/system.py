@@ -20,7 +20,7 @@ from handler.emby_discovery import (
 # 导入共享模块
 import extensions
 from extensions import admin_required, task_lock_required
-from tasks.system_update import _update_process_generator
+from tasks.system_update import _update_process_generator, resolve_update_target
 from handler.tg_userbot import TGUserBotManager
 import constants
 import utils
@@ -777,8 +777,9 @@ def stream_update_progress():
             # 确保发送的是 JSON 格式的字符串
             yield f"data: {json.dumps(data)}\n\n"
 
-        container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
-        image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
+        update_target = resolve_update_target()
+        container_name = update_target['container_name']
+        image_name_tag = update_target['docker_image_name']
 
         # 调用共享的生成器
         generator = _update_process_generator(container_name, image_name_tag)
@@ -797,8 +798,7 @@ def restart_container():
     """
     try:
         client = docker.from_env()
-        # 从配置中获取容器名，如果未配置则使用默认值
-        container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
+        container_name = resolve_update_target(docker_client=client)['container_name']
         
         if not container_name:
             logger.error("  ➜ API: 尝试重启容器，但配置中未找到 'container_name'。")
