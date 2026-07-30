@@ -253,31 +253,11 @@ class SubscribeAssistantManager:
             self._update_source_state(subscribe_id, decision)
             total = self._target_total(decision, season_info, signal)
             if created_subscription and decision["mp_state"] == "R":
-                self._remember_expected_mp_update(
-                    subscribe_id,
-                    fields=[
-                        "state",
-                        "last_update",
-                        "lack_episode",
-                        "completed_episode",
-                        "current_priority",
-                        "episode_priority",
-                    ],
-                    expected_state="R",
-                    expected_total=total,
+                logger.info(
+                    "  ➜ [订阅助手] 《%s》第 %s 季新订阅已保留 N 状态，等待 MP 新增订阅任务搜索。",
+                    series_name,
+                    season_num,
                 )
-                if moviepilot.search_subscription(subscribe_id, self.app_config):
-                    logger.info(
-                        "  ➜ [订阅助手] 《%s》第 %s 季新订阅已保留 N 状态并触发首次搜索。",
-                        series_name,
-                        season_num,
-                    )
-                else:
-                    logger.warning(
-                        "  ➜ [订阅助手] 《%s》第 %s 季首次搜索触发失败，已保留 N 状态等待 MP 定时重试。",
-                        series_name,
-                        season_num,
-                    )
             else:
                 self._remember_expected_mp_update(
                     subscribe_id,
@@ -994,6 +974,12 @@ class SubscribeAssistantManager:
         if self._consume_expected_mp_update(subscribe_id, info, fields):
             self._remember_subscription(subscribe_id, info, reason="subscribe.modified.expected")
             logger.debug("  ➜ [订阅助手] 已确认 ETK 预期内的 MP 订阅修改：%s。", self._format_subscribe_info(info))
+            return True
+
+        if str(old_info.get("state") or "").upper() == "N" and str(info.get("state") or "").upper() == "R":
+            self._remember_subscription(subscribe_id, info, reason="subscribe.modified.initial_search")
+            self._sync_mp_subscription_to_etk(info, reason="subscribe.modified.initial_search")
+            logger.debug("  ➜ [订阅助手] 已确认 MP 新增订阅首次搜索完成：%s。", self._format_subscribe_info(info))
             return True
 
         self._remember_subscription(
