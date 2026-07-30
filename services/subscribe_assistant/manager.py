@@ -203,6 +203,7 @@ class SubscribeAssistantManager:
                 real_next_episode=real_next_episode,
             )
             sub = existing_by_season.get(season_num)
+            created_subscription = False
             if not sub and season_num == latest_season_num and final_status in ("Watching", "Paused", "Pending") and not local_season_completed:
                 if self._triggering_episodes_are_virtual(triggering_episode_ids) or self._season_has_virtual_import(tmdb_id, season_num):
                     logger.info(
@@ -227,6 +228,7 @@ class SubscribeAssistantManager:
                 sub = self._create_subscription(tmdb_id, series_name, season_num, decision, consume_quota=True)
                 if sub:
                     existing_by_season[season_num] = sub
+                    created_subscription = True
             if not sub:
                 continue
 
@@ -250,27 +252,54 @@ class SubscribeAssistantManager:
 
             self._update_source_state(subscribe_id, decision)
             total = self._target_total(decision, season_info, signal)
-            self._remember_expected_mp_update(
-                subscribe_id,
-                fields=["state", "total_episode"] if total else ["state"],
-                expected_state=decision["mp_state"],
-                expected_total=total,
-            )
-            if moviepilot.update_subscription_status(
-                int(tmdb_id),
-                season_num,
-                decision["mp_state"],
-                self.app_config,
-                total_episodes=total,
-            ):
-                logger.info(
-                    "  ➜ [订阅助手] 《%s》第 %s 季 已同步 MP 状态=%s，总集数=%s，原因=%s",
-                    series_name,
+            if created_subscription and decision["mp_state"] == "R":
+                self._remember_expected_mp_update(
+                    subscribe_id,
+                    fields=[
+                        "state",
+                        "last_update",
+                        "lack_episode",
+                        "completed_episode",
+                        "current_priority",
+                        "episode_priority",
+                    ],
+                    expected_state="R",
+                    expected_total=total,
+                )
+                if moviepilot.search_subscription(subscribe_id, self.app_config):
+                    logger.info(
+                        "  ➜ [订阅助手] 《%s》第 %s 季新订阅已保留 N 状态并触发首次搜索。",
+                        series_name,
+                        season_num,
+                    )
+                else:
+                    logger.warning(
+                        "  ➜ [订阅助手] 《%s》第 %s 季首次搜索触发失败，已保留 N 状态等待 MP 定时重试。",
+                        series_name,
+                        season_num,
+                    )
+            else:
+                self._remember_expected_mp_update(
+                    subscribe_id,
+                    fields=["state", "total_episode"] if total else ["state"],
+                    expected_state=decision["mp_state"],
+                    expected_total=total,
+                )
+                if moviepilot.update_subscription_status(
+                    int(tmdb_id),
                     season_num,
                     decision["mp_state"],
-                    total or "不改",
-                    decision.get("reason") or "状态同步",
-                )
+                    self.app_config,
+                    total_episodes=total,
+                ):
+                    logger.info(
+                        "  ➜ [订阅助手] 《%s》第 %s 季 已同步 MP 状态=%s，总集数=%s，原因=%s",
+                        series_name,
+                        season_num,
+                        decision["mp_state"],
+                        total or "不改",
+                        decision.get("reason") or "状态同步",
+                    )
 
             if decision.get("snapshot"):
                 self._sync_completed_full_washing(
