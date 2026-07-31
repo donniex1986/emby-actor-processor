@@ -725,10 +725,9 @@ def task_manual_correct_organize_records(
                     submitted_ids = set(records_for_series)
                     for row in cursor.fetchall():
                         record_id = row['id']
-                        if (
-                            record_id not in submitted_ids
-                            and str(row.get('target_cid') or '') == series_target_cid
-                        ):
+                        if record_id in submitted_ids:
+                            continue
+                        if str(row.get('target_cid') or '') == series_target_cid:
                             continue
                         records_for_series[record_id] = row.get('season_number')
                     expanded_items.extend({
