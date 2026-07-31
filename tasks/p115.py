@@ -35,6 +35,74 @@ logger = logging.getLogger(__name__)
 FORCE_CACHE_MEDIAINFO = True
 
 
+def task_backfill_organize_record_tmdb_ids(processor=None):
+    """从媒体元数据按 PickCode/SHA1 补齐整理记录缺失的 TMDb ID。"""
+    try:
+        import task_manager
+    except ImportError:
+        task_manager = None
+
+    def update_progress(progress, message):
+        if task_manager:
+            task_manager.update_status_from_thread(progress, message)
+        logger.info(message)
+
+    update_progress(10, "正在从媒体元数据匹配缺失 TMDb ID 的整理记录...")
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                WITH matched AS (
+                    SELECT DISTINCT ON (record.id)
+                        record.id,
+                        CASE
+                            WHEN LOWER(metadata.item_type) = 'movie' THEN metadata.tmdb_id
+                            WHEN LOWER(metadata.item_type) IN ('series', 'season', 'episode')
+                                THEN COALESCE(metadata.parent_series_tmdb_id, metadata.tmdb_id)
+                            ELSE NULL
+                        END AS tmdb_id
+                    FROM p115_organize_records record
+                    LEFT JOIN p115_filesystem_cache cache ON cache.id = record.file_id
+                    JOIN media_metadata metadata ON (
+                        NULLIF(record.pick_code, '') IS NOT NULL
+                        AND metadata.file_pickcode_json ? record.pick_code
+                    ) OR (
+                        NULLIF(cache.sha1, '') IS NOT NULL
+                        AND (
+                            metadata.file_sha1_json ? UPPER(cache.sha1)
+                            OR metadata.file_sha1_json ? LOWER(cache.sha1)
+                        )
+                    )
+                    WHERE LOWER(BTRIM(COALESCE(record.tmdb_id, '')))
+                        IN ('', 'null', 'none', 'undefined')
+                    ORDER BY
+                        record.id,
+                        CASE WHEN NULLIF(record.pick_code, '') IS NOT NULL
+                            AND metadata.file_pickcode_json ? record.pick_code THEN 0 ELSE 1 END,
+                        CASE metadata.item_type
+                            WHEN 'Movie' THEN 1
+                            WHEN 'Episode' THEN 2
+                            WHEN 'Season' THEN 3
+                            WHEN 'Series' THEN 4
+                            ELSE 9
+                        END,
+                        metadata.in_library DESC,
+                        metadata.last_updated_at DESC NULLS LAST
+                )
+                UPDATE p115_organize_records record
+                SET tmdb_id = matched.tmdb_id
+                FROM matched
+                WHERE record.id = matched.id
+                  AND LOWER(BTRIM(COALESCE(matched.tmdb_id, '')))
+                      NOT IN ('', 'null', 'none', 'undefined')
+                RETURNING record.id
+            """)
+            updated_count = len(cursor.fetchall())
+            conn.commit()
+
+    update_progress(100, f"整理记录 TMDb ID 补齐完成，共更新 {updated_count} 条记录。")
+    return updated_count
+
+
 def _fill_home_video_screenshots(processor, config, strm_paths):
     """Upload screenshots for synced home videos that are missing Emby Primary images."""
     result = {'matched': 0, 'skipped': 0, 'uploaded': 0, 'failed': 0, 'unresolved': 0}
