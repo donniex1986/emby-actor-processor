@@ -331,7 +331,6 @@ def persist_initial_tmdb_metadata(
     *,
     title: str = "",
     original_title: str = "",
-    rating_label: str = "",
     image_language_preference: str = "zh",
 ) -> bool:
     """Persist the pre-Emby TMDb snapshot without overwriting translated metadata."""
@@ -375,7 +374,6 @@ def persist_initial_tmdb_metadata(
         "homepage": details.get("homepage"),
         "runtime_minutes": _runtime(details, media_type),
         "rating": details.get("vote_average"),
-        "custom_rating": rating_label if rating_label and rating_label != "未知" else None,
         "imdb_id": (details.get("external_ids") or {}).get("imdb_id"),
         "genres_json": details.get("genres") or [],
         "directors_json": _directors(details),
@@ -397,7 +395,7 @@ def persist_initial_tmdb_metadata(
     protected = {
         "title", "original_title", "original_language", "overview", "tagline",
         "release_date", "release_year", "last_air_date", "homepage", "runtime_minutes",
-        "rating", "custom_rating", "imdb_id", "genres_json", "directors_json",
+        "rating", "imdb_id", "genres_json", "directors_json",
         "production_companies_json", "networks_json", "countries_json", "keywords_json",
         "total_episodes", "watchlist_tmdb_status",
     }
