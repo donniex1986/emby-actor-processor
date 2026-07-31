@@ -30,6 +30,7 @@ from handler.p115_service import (
 )
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.tg_media_candidate import candidate_to_recognition_hints, lookup_candidate_hint_for_name
+from handler.home_video_nfo import build_missing_emby_metadata, match_nfo_to_strm_paths, parse_home_video_nfo
 
 logger = logging.getLogger(__name__)
 FORCE_CACHE_MEDIAINFO = True
@@ -103,6 +104,188 @@ def task_backfill_organize_record_tmdb_ids(processor=None):
     return updated_count
 
 
+def _download_p115_small_file(client, pick_code, max_bytes=2 * 1024 * 1024):
+    import requests
+
+    url = client.resolve_download_url(pick_code, user_agent='Mozilla/5.0')
+    if not url:
+        raise RuntimeError('无法取得 115 下载地址')
+    response = requests.get(
+        str(url),
+        stream=True,
+        timeout=30,
+        headers={'User-Agent': 'Mozilla/5.0', 'Cookie': P115Service.get_cookies()},
+    )
+    response.raise_for_status()
+    content_length = int(response.headers.get('Content-Length') or 0)
+    if content_length > max_bytes:
+        raise ValueError(f'115 文件超过 {max_bytes} 字节限制')
+    chunks = []
+    total = 0
+    for chunk in response.iter_content(64 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f'115 文件超过 {max_bytes} 字节限制')
+        chunks.append(chunk)
+    return b''.join(chunks)
+
+
+def _inject_home_video_nfos(processor, config, strm_paths, nfo_files, image_files, client):
+    """Read related 115 NFO files into memory and fill missing Emby metadata."""
+    result = {'parsed': 0, 'updated': 0, 'unchanged': 0, 'failed': 0, 'unresolved': 0}
+    if not nfo_files or not strm_paths:
+        return result
+
+    from handler import emby
+
+    base_url = str(config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL) or '').strip()
+    api_key = str(config.get(constants.CONFIG_OPTION_EMBY_API_KEY) or '').strip()
+    user_id = str(config.get(constants.CONFIG_OPTION_EMBY_USER_ID) or '').strip()
+    if not base_url or not api_key or not user_id:
+        result['unresolved'] = len(nfo_files)
+        logger.warning("  ➜ [家庭视频NFO] Emby 连接配置不完整，跳过元数据注入。")
+        return result
+
+    libraries = emby.get_emby_libraries(base_url, api_key, user_id) or []
+    library_ids = [str(item.get('Id')) for item in libraries if item.get('Id')]
+    if not library_ids:
+        result['unresolved'] = len(nfo_files)
+        return result
+
+    target_paths = {
+        emby._normalize_emby_media_path(path): path
+        for path in strm_paths
+        if emby._normalize_emby_media_path(path)
+    }
+    emby.notify_emby_file_changes(list(target_paths.values()), base_url, api_key)
+    matched = {}
+    for delay in (0, 1, 2, 4, 8):
+        if delay:
+            time.sleep(delay)
+        items = emby.get_emby_library_items(
+            base_url=base_url,
+            api_key=api_key,
+            media_type_filter='Movie,Episode,Video',
+            user_id=user_id,
+            library_ids=library_ids,
+            fields='Path,SeriesId',
+            limit=10000,
+        ) or []
+        matched = {
+            normalized: item
+            for item in items
+            if (normalized := emby._normalize_emby_media_path(item.get('Path'))) in target_paths
+        }
+        if len(matched) == len(target_paths):
+            break
+
+    def path_key(path):
+        return emby._normalize_emby_media_path(path).casefold()
+
+    matched_by_path = {path_key(path): item for path, item in matched.items()}
+    strm_paths_folded = [path_key(path) for path in target_paths]
+    images_by_path = {path_key(row.get('virtual_path')): row for row in image_files or []}
+    item_details_cache = {}
+
+    def nfo_priority(row):
+        name = str(row.get('name') or '').lower()
+        return 2 if name == 'tvshow.nfo' else (1 if name == 'movie.nfo' else 0)
+
+    for nfo in sorted(nfo_files, key=nfo_priority):
+        nfo_path = path_key(nfo.get('virtual_path'))
+        nfo_dir = nfo_path.rsplit('/', 1)[0] if '/' in nfo_path else ''
+        nfo_name = nfo_path.rsplit('/', 1)[-1]
+        related_paths = match_nfo_to_strm_paths(nfo_path, strm_paths_folded)
+
+        related_items = [matched_by_path[path] for path in related_paths if path in matched_by_path]
+        if not related_items:
+            result['unresolved'] += 1
+            continue
+
+        try:
+            parsed = parse_home_video_nfo(_download_p115_small_file(client, nfo.get('pick_code')))
+            result['parsed'] += 1
+        except Exception as exc:
+            result['failed'] += 1
+            logger.warning(f"  ➜ [家庭视频NFO] 读取或解析失败: {nfo.get('name')} -> {exc}")
+            continue
+
+        if nfo_name == 'tvshow.nfo':
+            target_ids = {str(item.get('SeriesId') or '').strip() for item in related_items}
+        else:
+            target_ids = {str(item.get('Id') or '').strip() for item in related_items}
+        target_ids.discard('')
+        if not target_ids:
+            result['unresolved'] += 1
+            continue
+
+        for item_id in target_ids:
+            details = item_details_cache.get(item_id)
+            if details is None:
+                details = emby.get_emby_item_details(
+                    item_id, base_url, api_key, user_id,
+                    fields='ProviderIds,People,Path,OriginalTitle,DateCreated,PremiereDate,ProductionYear,Overview,CommunityRating,CriticRating,OfficialRating,Genres,Studios,Taglines,Tags,ProductionLocations,ParentIndexNumber,IndexNumber,RunTimeTicks,ImageTags,BackdropImageTags',
+                ) or {}
+                item_details_cache[item_id] = details
+            update = build_missing_emby_metadata(details, parsed)
+            if update and emby.update_emby_item_details(item_id, update, base_url, api_key, user_id):
+                details.update(update)
+                result['updated'] += 1
+            elif update:
+                result['failed'] += 1
+                continue
+            else:
+                result['unchanged'] += 1
+
+            for image in parsed.get('images') or []:
+                image_type = str(image.get('type') or 'Primary')
+                image_tags = details.get('ImageTags') or {}
+                if image_type == 'Backdrop':
+                    if details.get('BackdropImageTags'):
+                        continue
+                elif image_tags.get(image_type):
+                    continue
+                reference = str(image.get('reference') or '').strip().replace('\\', '/')
+                if not reference or reference.lower().startswith(('http://', 'https://')):
+                    continue
+                image_path = path_key(os.path.join(nfo_dir, reference))
+                image_row = images_by_path.get(image_path)
+                if not image_row:
+                    image_row = images_by_path.get(path_key(os.path.join(nfo_dir, os.path.basename(reference))))
+                if not image_row:
+                    continue
+                try:
+                    image_data = _download_p115_small_file(
+                        client, image_row.get('pick_code'), max_bytes=20 * 1024 * 1024,
+                    )
+                    suffix = os.path.splitext(str(image_row.get('name') or ''))[1].lower()
+                    content_type = {
+                        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                        '.webp': 'image/webp',
+                    }.get(suffix, 'application/octet-stream')
+                    if emby.upload_item_image(
+                        base_url, api_key, item_id, image_data,
+                        content_type=content_type, image_type=image_type,
+                        delete_existing=False,
+                    ):
+                        if image_type == 'Backdrop':
+                            details['BackdropImageTags'] = ['etk-nfo']
+                        else:
+                            details.setdefault('ImageTags', {})[image_type] = 'etk-nfo'
+                except Exception as exc:
+                    result['failed'] += 1
+                    logger.warning(
+                        f"  ➜ [家庭视频NFO] 图片读取或上传失败: {image_row.get('name')} -> {exc}"
+                    )
+
+    logger.info(
+        "  ➜ [家庭视频NFO] 注入完成："
+        f"解析 {result['parsed']}，更新 {result['updated']}，无需更新 {result['unchanged']}，"
+        f"未入库/未关联 {result['unresolved']}，失败 {result['failed']}。"
+    )
+    return result
+
+
 def _fill_home_video_screenshots(processor, config, strm_paths):
     """Upload screenshots for synced home videos that are missing Emby Primary images."""
     result = {'matched': 0, 'skipped': 0, 'uploaded': 0, 'failed': 0, 'unresolved': 0}
@@ -131,13 +314,9 @@ def _fill_home_video_screenshots(processor, config, strm_paths):
         return result
 
     libraries = emby.get_emby_libraries(base_url, api_key, user_id) or []
-    library_ids = [
-        str(item.get('Id'))
-        for item in libraries
-        if item.get('Id') and item.get('CollectionType') == 'homevideos'
-    ]
+    library_ids = [str(item.get('Id')) for item in libraries if item.get('Id')]
     if not library_ids:
-        logger.warning("  ➜ [家庭视频截图] Emby 中没有家庭视频媒体库，跳过补图。")
+        logger.warning("  ➜ [家庭视频截图] Emby 中没有可扫描的媒体库，跳过补图。")
         result['unresolved'] = len(target_paths)
         return result
 
@@ -151,7 +330,7 @@ def _fill_home_video_screenshots(processor, config, strm_paths):
         items = emby.get_emby_library_items(
             base_url=base_url,
             api_key=api_key,
-            media_type_filter='Video',
+            media_type_filter='Movie,Episode,Video',
             user_id=user_id,
             library_ids=library_ids,
             fields='Path,ImageTags',
@@ -1448,6 +1627,7 @@ def task_full_sync_strm_and_subs(processor=None, *, home_video_only=False):
         
         known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
         known_sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
+        known_image_exts = {'jpg', 'jpeg', 'png', 'webp'}
         allowed_exts = set(e.lower() for e in config.get(constants.CONFIG_OPTION_115_EXTENSIONS, []))
         if not allowed_exts:
             allowed_exts = known_video_exts | known_sub_exts
@@ -1701,7 +1881,9 @@ def task_full_sync_strm_and_subs(processor=None, *, home_video_only=False):
                 # 兼容 OpenAPI、Cookie 和 p115client 标准化字段
                 name = first_present(item.get('fn'), item.get('n'), item.get('file_name'), item.get('name')) or ''
                 ext = name.split('.')[-1].lower() if '.' in name else ''
-                if ext not in allowed_exts:
+                if ext not in allowed_exts and not (
+                    is_home_video_target and (ext == 'nfo' or ext in known_image_exts)
+                ):
                     continue
 
                 pc = first_present(item.get('pc'), item.get('pick_code'), item.get('pickcode'))
@@ -1854,6 +2036,20 @@ def task_full_sync_strm_and_subs(processor=None, *, home_video_only=False):
                                 'media_type': cid_to_media_type.get(str(target_cid)),
                             }
 
+                elif ext == 'nfo' and is_home_video_target:
+                    pending_home_video_nfos.append({
+                        'name': name,
+                        'pick_code': pc,
+                        'virtual_path': os.path.abspath(os.path.join(current_local_path, name)),
+                    })
+
+                elif ext in known_image_exts and is_home_video_target:
+                    pending_home_video_images.append({
+                        'name': name,
+                        'pick_code': pc,
+                        'virtual_path': os.path.abspath(os.path.join(current_local_path, name)),
+                    })
+
                 # 处理字幕下载
                 elif ext in known_sub_exts and download_subs:
                     sub_path = os.path.join(current_local_path, name)
@@ -1885,6 +2081,8 @@ def task_full_sync_strm_and_subs(processor=None, *, home_video_only=False):
         root_anomaly_skipped = 0
         changed_strm_files = set()
         home_video_strm_paths = set()
+        pending_home_video_nfos = []
+        pending_home_video_images = []
         pending_organize_records = {}
 
         total_targets = len(target_cids)
@@ -1896,9 +2094,12 @@ def task_full_sync_strm_and_subs(processor=None, *, home_video_only=False):
             update_progress(base_prog, f"  ➜ 正在拉取分类 [{category_name}] 下的所有文件...")
 
             fetch_types = [4] # 4=视频
-            if download_subs:
+            is_home_video_target = cid_to_media_type.get(str(target_cid)) == 'home_video'
+            if download_subs or is_home_video_target:
                 fetch_types.append(1) # 1=文档(含字幕)
-            type_names = {1: "文档/字幕", 4: "视频"}
+            if is_home_video_target:
+                fetch_types.append(2) # 2=图片（仅用于 NFO 引用图片注入）
+            type_names = {1: "文档/字幕/NFO", 2: "图片", 4: "视频"}
             for f_type in fetch_types:
                 type_name = type_names.get(f_type, str(f_type))
                 offset = 0
@@ -2271,6 +2472,11 @@ def task_full_sync_strm_and_subs(processor=None, *, home_video_only=False):
                 logger.warning(f"  ➜ 通知 Emby 扫描全量生成 STRM 变更失败: {e}")
 
         if home_video_strm_paths:
+            if pending_home_video_nfos:
+                _inject_home_video_nfos(
+                    processor, config, home_video_strm_paths,
+                    pending_home_video_nfos, pending_home_video_images, client,
+                )
             _fill_home_video_screenshots(processor, config, home_video_strm_paths)
 
         end_message = "=== 家庭视频STRM同步任务结束 ===" if home_video_only else "=== 全量生成STRM任务结束 ==="
