@@ -715,17 +715,21 @@ def task_manual_correct_organize_records(
                 for series_tmdb_id, series_target_cid in tv_targets.items():
                     cursor.execute(
                         """
-                        SELECT id, season_number
+                        SELECT id, season_number, target_cid
                         FROM p115_organize_records
                         WHERE tmdb_id = %s AND media_type = 'tv' AND status = 'success'
                         """,
                         (series_tmdb_id,),
                     )
                     records_for_series = submitted_by_tmdb[series_tmdb_id]
-                    records_for_series.update({
-                        row['id']: row.get('season_number')
-                        for row in cursor.fetchall()
-                    })
+                    submitted_ids = set(records_for_series)
+                    for row in cursor.fetchall():
+                        record_id = row['id']
+                        if record_id in submitted_ids:
+                            continue
+                        if str(row.get('target_cid') or '') == series_target_cid:
+                            continue
+                        records_for_series[record_id] = row.get('season_number')
                     expanded_items.extend({
                         'id': record_id,
                         'tmdb_id': series_tmdb_id,
