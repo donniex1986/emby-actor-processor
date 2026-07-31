@@ -673,7 +673,7 @@ def clean_stream_garbage_words(text: str) -> str:
 
 # --- 语言预设表 ---
 DEFAULT_LANGUAGE_MAPPING = [
-    {"label": "国语", "value": "zh", "aliases": ["chi", "zho", "zh", "chs", "zh-cn", "zh-sg", "zh-hans", "cmn", "mandarin", "guo", "guoyu", "国语", "普通话", "中文", "简体", "简中"]},
+    {"label": "国语", "value": "zh", "aliases": ["chi", "zho", "zh", "chs", "zh-cn", "zh-sg", "zh-hans", "cmn", "mandarin", "taiwan", "台湾", "台灣", "guo", "guoyu", "国语", "普通话", "中文", "简体", "简中"]},
     {"label": "粤语", "value": "cn", "aliases": ["yue", "cht", "cn", "zh-hk", "zh-tw", "zh-hant", "hk", "tw", "cantonese", "粤语", "繁体", "繁中", "粤配", "港配", "粤语配音", "广东话"]},
 
     {"label": "英语", "value": "en", "aliases": ["eng", "en", "english", "英语", "英文"]},
