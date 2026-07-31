@@ -83,7 +83,7 @@ TASK_HELP_TEXTS = {
     'shared-share-status-sync': '高频同步共享分享状态，检查分享是否仍可用并更新中心状态。',
     'system-auto-update': '检查并执行系统容器自动更新，适合需要保持 ETK 最新版本时使用。',
     'recalculate_library_washing_priorities': '重新计算媒体库中每个媒体的洗版优先级，适合调整洗版规则或新增优先级因素后使用。',
-    'manual-correct-organize-records': '将整理记录按用户指定的 TMDb、媒体类型、季号和目标目录重新整理；走媒体任务队列。',
+    'manual-correct-organize-records': '按用户指定的 TMDb、媒体类型和目标目录重新整理；电视剧会联动全部已整理季，并按季分批执行。',
 }
 
 

@@ -693,6 +693,48 @@ def task_manual_correct_organize_records(
     if not normalized_items:
         raise ValueError("没有可重组的整理记录")
 
+    # 手动修改电视剧分类时，以整剧为单位联动全部已整理季。
+    tv_targets = {}
+    for item in normalized_items:
+        if item.get('media_type') != 'tv':
+            continue
+        key = item['tmdb_id']
+        previous_target = tv_targets.setdefault(key, item['target_cid'])
+        if previous_target != item['target_cid']:
+            raise ValueError(f"同一剧集不能同时重组到多个目标分类: TMDb {key}")
+
+    if tv_targets:
+        expanded_items = [item for item in normalized_items if item.get('media_type') != 'tv']
+        submitted_by_tmdb = {}
+        for item in normalized_items:
+            if item.get('media_type') == 'tv':
+                submitted_by_tmdb.setdefault(item['tmdb_id'], {})[item['id']] = item.get('season_num')
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                for series_tmdb_id, series_target_cid in tv_targets.items():
+                    cursor.execute(
+                        """
+                        SELECT id, season_number
+                        FROM p115_organize_records
+                        WHERE tmdb_id = %s AND media_type = 'tv' AND status = 'success'
+                        """,
+                        (series_tmdb_id,),
+                    )
+                    records_for_series = submitted_by_tmdb[series_tmdb_id]
+                    records_for_series.update({
+                        row['id']: row.get('season_number')
+                        for row in cursor.fetchall()
+                    })
+                    expanded_items.extend({
+                        'id': record_id,
+                        'tmdb_id': series_tmdb_id,
+                        'media_type': 'tv',
+                        'target_cid': series_target_cid,
+                        'season_num': _manual_correct_normalize_season(record_season),
+                    } for record_id, record_season in records_for_series.items())
+        normalized_items = expanded_items
+
     grouped = {}
     group_order = []
     for item in normalized_items:

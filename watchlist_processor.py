@@ -2487,6 +2487,8 @@ class WatchlistProcessor:
                     if client:
                         # 1. 提前计算出新的目标目录 CID
                         organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name)
+                        # 自动重组只能跟随 Series 的 TMDb 状态；Season 状态仅表示本地是否集齐。
+                        organizer.forced_season = None
                         new_target_cid = organizer.get_target_cid(ignore_memory=True)
 
                         if new_target_cid:

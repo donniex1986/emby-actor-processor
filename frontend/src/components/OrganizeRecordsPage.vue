@@ -368,7 +368,7 @@ const columns = computed(() => {
       title: '操作', key: 'actions', width: isMobile.value ? 72 : 120, align: 'center', fixed: isMobile.value ? undefined : 'right',
       render(row) {
         return h(NSpace, { justify: 'center', size: isMobile.value ? 4 : 8 }, () => [
-          h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'primary', ghost: true, circle: true, onClick: () => openEditModal(row) }, { icon: () => h(NIcon, { component: EditIcon }) }), default: () => row.isGroup ? '整季批量纠错' : (row.status === 'success' ? '修改整理分类/纠错' : '手动分配ID整理') }),
+          h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'primary', ghost: true, circle: true, onClick: () => openEditModal(row) }, { icon: () => h(NIcon, { component: EditIcon }) }), default: () => row.isGroup ? '整剧分类纠错' : (row.status === 'success' ? '修改整理分类/纠错' : '手动分配ID整理') }),
           h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true, circle: true, onClick: () => deleteRecord(row) }, { icon: () => h(NIcon, { component: TrashIcon }) }), default: () => row.isGroup ? '整季批量删除记录' : '删除此记录 (仅删除记录不删文件)' })
         ]);
       }

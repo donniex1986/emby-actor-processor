@@ -6692,69 +6692,31 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     )
                     return rule.get('cid')
 
-        # ★★★ 1. 查历史记录 (记忆功能 - 升级为分季隔离 + 规则校验版) ★★★
+        # ★★★ 1. 查历史记录（电视剧按整剧共享分类记忆）★★★
         if not ignore_memory:
             try:
                 from database.connection import get_db_connection
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        if self.media_type == 'tv' and season_num is not None:
-                            # 查找该剧最近的 50 条记录，寻找属于该季的专属记忆
-                            cursor.execute("""
-                                SELECT target_cid, category_name, renamed_name, original_name 
-                                FROM p115_organize_records 
-                                WHERE tmdb_id = %s AND status = 'success' 
-                                ORDER BY processed_at DESC LIMIT 50
-                            """, (str(self.tmdb_id),))
-                            rows = cursor.fetchall()
-                            import re
-                            for row in rows:
-                                name_to_check = row['renamed_name'] or row['original_name'] or ""
-                                m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', name_to_check)
-                                m2 = re.search(r'Season\s*(\d{1,4})\b', name_to_check, re.IGNORECASE)
-                                m3 = re.search(r'第\s*(\d{1,4})\s*季', name_to_check)
-                                s_val = None
-                                if m1: s_val = int(m1.group(1))
-                                elif m2: s_val = int(m2.group(1))
-                                elif m3: s_val = int(m3.group(1))
-                                
-                                if s_val == season_num:
-                                    history_cid = str(row['target_cid'])
-                                    # ★ 核心修复：校验记忆是否失效
-                                    if _is_cid_valid_in_rules(history_cid) and _memory_cid_matches_current_file(history_cid, current_ext):
-                                        logger.info(f"  ➜ [分季记忆体] 第 {season_num} 季曾整理到“{row['category_name']}”，本次沿用该分类。")
-                                        logger.debug(f"  ➜ [分季记忆体] 沿用历史目录：CID={history_cid}")
-                                        self.is_from_memory = True # 打上记忆命中标记
-                                        return history_cid
-                                    elif _is_cid_valid_in_rules(history_cid):
-                                        logger.info(f"  ➜ [分季记忆体] 历史分类“{row['category_name']}”为文件级分类，当前扩展名不匹配，交由规则引擎重新分配。")
-                                        break
-                                    else:
-                                        logger.warning(f"  ➜ [分季记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
-                                        break # 记忆失效，跳出循环走规则
-                            
-                            logger.debug(f"  ➜ [分季记忆体] 未找到 '第 {season_num} 季' 的有效专属记忆，将使用规则引擎进行分配。")
-                        else:
-                            # 电影或未提供季号的兜底逻辑
-                            cursor.execute("""
-                                SELECT target_cid, category_name 
-                                FROM p115_organize_records 
-                                WHERE tmdb_id = %s AND status = 'success' 
-                                ORDER BY processed_at DESC LIMIT 1
-                            """, (str(self.tmdb_id),))
-                            row = cursor.fetchone()
-                            if row and row['target_cid']:
-                                history_cid = str(row['target_cid'])
-                                # ★ 核心修复：校验记忆是否失效
-                                if _is_cid_valid_in_rules(history_cid) and _memory_cid_matches_current_file(history_cid, current_ext):
-                                    logger.info(f"  ➜ [记忆体] 该媒体曾整理到“{row['category_name']}”，本次沿用该分类。")
-                                    logger.debug(f"  ➜ [记忆体] 沿用历史目录：CID={history_cid}")
-                                    self.is_from_memory = True # 打上记忆命中标记
-                                    return history_cid
-                                elif _is_cid_valid_in_rules(history_cid):
-                                    logger.info(f"  ➜ [记忆体] 历史分类“{row['category_name']}”为文件级分类，当前扩展名不匹配，交由规则引擎重新分配。")
-                                else:
-                                    logger.warning(f"  ➜ [记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
+                        cursor.execute("""
+                            SELECT target_cid, category_name
+                            FROM p115_organize_records
+                            WHERE tmdb_id = %s AND media_type = %s AND status = 'success'
+                            ORDER BY processed_at DESC, id DESC LIMIT 1
+                        """, (str(self.tmdb_id), self.media_type))
+                        row = cursor.fetchone()
+                        if row and row['target_cid']:
+                            history_cid = str(row['target_cid'])
+                            if _is_cid_valid_in_rules(history_cid) and _memory_cid_matches_current_file(history_cid, current_ext):
+                                memory_scope = "整剧" if self.media_type == 'tv' else "媒体"
+                                logger.info(f"  ➜ [记忆体] 该{memory_scope}曾整理到“{row['category_name']}”，本次沿用该分类。")
+                                logger.debug(f"  ➜ [记忆体] 沿用历史目录：CID={history_cid}")
+                                self.is_from_memory = True
+                                return history_cid
+                            elif _is_cid_valid_in_rules(history_cid):
+                                logger.info(f"  ➜ [记忆体] 历史分类“{row['category_name']}”为文件级分类，当前扩展名不匹配，交由规则引擎重新分配。")
+                            else:
+                                logger.warning(f"  ➜ [记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
             except Exception as e:
                 logger.warning(f"  ➜ 查询历史整理记录失败: {e}")
 
