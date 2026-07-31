@@ -1,6 +1,7 @@
 # task_manager.py (V2 - 精确调度版)
 import threading
 import logging
+import os
 from queue import Queue
 from typing import Optional, Callable, Union, Literal
 
@@ -31,6 +32,24 @@ task_worker_thread: Optional[threading.Thread] = None
 task_worker_lock = threading.Lock()
 _pending_organize_lock = threading.Lock()
 _pending_organize_sources = []
+
+_BACKGROUND_TASK_NICE = 10
+
+
+def _lower_background_task_priority() -> None:
+    """Lower only the task worker's Linux scheduler priority."""
+    if os.name != 'posix' or not hasattr(os, 'setpriority'):
+        return
+
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), _BACKGROUND_TASK_NICE)
+        logger.info(
+            "  ➜ Background task CPU priority lowered (nice=%s); "
+            "reverse-proxy requests keep normal priority.",
+            _BACKGROUND_TASK_NICE,
+        )
+    except (OSError, AttributeError) as exc:
+        logger.warning("Unable to lower background task CPU priority: %s", exc)
 
 _ORGANIZE_SOURCE_LABELS = {
     'tg_share_import': 'TG分享转存',
@@ -167,6 +186,7 @@ def task_worker_function():
     【V2 - 精确调度版】
     通用工人线程，根据提交任务时指定的 processor_type 来精确选择处理器。
     """
+    _lower_background_task_priority()
     logger.trace("  ➜ 通用任务线程已启动，等待任务...")
     while True:
         try:
