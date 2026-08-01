@@ -1561,7 +1561,7 @@ def _cleanup_shared_sources_after_media_delete(contexts: List[Dict[str, Any]]) -
         result['file_cleanup'] = file_cleanup
     return result
 
-def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, series_id_from_webhook: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, series_id_from_webhook: Optional[str] = None, local_only: bool = False) -> Optional[Dict[str, Any]]:
     """
     处理一个从 Emby 中被删除的媒体项，同步清除所有相关的数据。
     """
@@ -1736,7 +1736,10 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 if remaining_count > 0:
                     logger.info(f"  ➜ 媒体项 '{item_name}' (TMDB: {tmdb_id}) 移除了一个版本，但仍有 {remaining_count} 个版本在库中。")
                     conn.commit()
-                    _cleanup_shared_sources_after_media_delete(shared_cleanup_contexts)
+                    if not local_only:
+                        _cleanup_shared_sources_after_media_delete(shared_cleanup_contexts)
+                    else:
+                        logger.info("  ➜ [虚拟入库] 本地善后模式，跳过共享源/中心实时下架。")
                     return None
 
                 # --- 情况 B: 所有版本都已删除 (remaining_count == 0) ---
@@ -2105,7 +2108,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 # 提交事务
                 conn.commit()
 
-        shared_cleanup_result = _cleanup_shared_sources_after_media_delete(shared_cleanup_contexts)
+        if local_only:
+            shared_cleanup_result = {'ok': True, 'skipped': True, 'local_only': True}
+            logger.info("  ➜ [虚拟入库] 本地善后模式，跳过共享源/中心实时下架。")
+        else:
+            shared_cleanup_result = _cleanup_shared_sources_after_media_delete(shared_cleanup_contexts)
         if cascaded_cleanup_info is not None:
             cascaded_cleanup_info['shared_cleanup'] = shared_cleanup_result
         return cascaded_cleanup_info

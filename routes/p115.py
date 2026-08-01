@@ -101,6 +101,34 @@ def _extract_p115_pickcodes_from_emby_item(item):
     return pickcodes
 
 
+def _extract_p115_virtual_id_from_emby_item(item, sha1=''):
+    if not isinstance(item, dict):
+        return 0
+    expected_sha1 = str(sha1 or '').strip().upper()
+    values = [item.get('Path')]
+    values.extend(
+        source.get('Path')
+        for source in (item.get('MediaSources') or [])
+        if isinstance(source, dict)
+    )
+    for value in values:
+        text = unquote(str(value or ''))
+        virtual_match = re.search(
+            r'/api/p115/virtual-play/(\d+)/([A-Fa-f0-9]{40})(?:[/?#]|$)',
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not virtual_match:
+            continue
+        if expected_sha1 and virtual_match.group(2).upper() != expected_sha1:
+            continue
+        try:
+            return int(virtual_match.group(1))
+        except Exception:
+            return 0
+    return 0
+
+
 def _collect_deep_delete_fallback_pickcodes(root_item_id, actual_type, anchor):
     pickcodes = []
     seen = set()
@@ -2208,6 +2236,42 @@ def _prepare_deep_delete_response(sha1, expected_pick_code=''):
     if actual_type != requested_type:
         return jsonify({'ok': False, 'error': 'root item type mismatch'}), 409
 
+    virtual_id = _extract_p115_virtual_id_from_emby_item(anchor, sha1)
+    if virtual_id:
+        now = time.time()
+        token = secrets.token_urlsafe(24)
+        snapshot = {
+            'created_at': now,
+            'item_id': root_item_id,
+            'item_name': str(root.get('Name') or payload.get('item_name') or root_item_id),
+            'item_type': actual_type,
+            'series_id': str(root.get('SeriesId') or payload.get('series_id') or '').strip(),
+            'pickcodes': [],
+            'p115_file_snapshots': [],
+            'local_only': True,
+            'virtual_id': virtual_id,
+        }
+        with _deep_delete_lock:
+            expired = [
+                key for key, value in _deep_delete_snapshots.items()
+                if now - float(value.get('created_at') or 0) > _DEEP_DELETE_TTL_SECONDS
+            ]
+            for key in expired:
+                _deep_delete_snapshots.pop(key, None)
+            _deep_delete_snapshots[token] = snapshot
+
+        logger.info(
+            '  ➜ [ETK 深度删除] 已准备虚拟入库本地善后：%s（类型 %s，EmbyID=%s，VirtualID=%s）。',
+            snapshot['item_name'], actual_type, root_item_id, virtual_id,
+        )
+        return jsonify({
+            'ok': True,
+            'token': token,
+            'pickcode_count': 0,
+            'local_only': True,
+            'virtual_id': virtual_id,
+        })
+
     pickcodes = media_db.get_pickcodes_for_deleted_emby_item(root_item_id, actual_type)
     anchor_pick_code = str(expected_pick_code or '').strip()
     if not anchor_pick_code:
@@ -2272,17 +2336,26 @@ def _commit_deep_delete_response():
     def _process_deep_delete():
         try:
             from database import maintenance_db
-            from handler.p115_service import delete_115_files_by_webhook
+            local_only = bool(snapshot.get('local_only'))
+            if not local_only:
+                from handler.p115_service import delete_115_files_by_webhook
 
-            delete_115_files_by_webhook(
-                snapshot['pickcodes'],
-                file_snapshots=snapshot.get('p115_file_snapshots') or [],
-            )
+                delete_115_files_by_webhook(
+                    snapshot['pickcodes'],
+                    file_snapshots=snapshot.get('p115_file_snapshots') or [],
+                )
+            else:
+                logger.info(
+                    '  ➜ [ETK 深度删除] 虚拟入库删除仅执行本地善后，跳过 115 网盘联动：EmbyID=%s，VirtualID=%s。',
+                    snapshot['item_id'],
+                    snapshot.get('virtual_id') or '-',
+                )
             maintenance_db.cleanup_deleted_media_item(
                 item_id=snapshot['item_id'],
                 item_name=snapshot['item_name'],
                 item_type=snapshot['item_type'],
                 series_id_from_webhook=snapshot.get('series_id') or None,
+                local_only=local_only,
             )
         except Exception:
             logger.exception(
@@ -2299,7 +2372,12 @@ def _commit_deep_delete_response():
         '  ➜ [ETK 深度删除] 已确认删除并提交后续处理：%s（类型=%s，EmbyID=%s）。',
         snapshot['item_name'], snapshot['item_type'], snapshot['item_id'],
     )
-    return jsonify({'ok': True, 'accepted': True, 'pickcode_count': len(snapshot['pickcodes'])}), 202
+    return jsonify({
+        'ok': True,
+        'accepted': True,
+        'pickcode_count': len(snapshot['pickcodes']),
+        'local_only': bool(snapshot.get('local_only')),
+    }), 202
 
 
 @p115_bp.route('/mediainfo/<pick_code>/deep-delete/prepare', methods=['POST'])
