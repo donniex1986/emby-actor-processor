@@ -559,6 +559,7 @@ def _client_report_transfer(
     lease_id: str = '',
     transfer_mode: str = '',
     share_channel_id: str = '',
+    rapid_sign_job_ids: List[str] = None,
 ) -> Dict[str, Any]:
     """上报转存结果；新版中心用 lease_id/transfer_mode/share_channel_id 精确释放与结算。"""
     extra = {}
@@ -571,6 +572,13 @@ def _client_report_transfer(
         extra['transfer_mode'] = transfer_mode
     if share_channel_id:
         extra['share_channel_id'] = share_channel_id
+    job_ids = []
+    for value in rapid_sign_job_ids or []:
+        text = str(value or '').strip()
+        if text and text not in job_ids:
+            job_ids.append(text)
+    if job_ids:
+        extra['rapid_sign_job_ids'] = job_ids
 
     base_kwargs = {
         'success_count': success_count,
@@ -762,6 +770,7 @@ def _client_report_transfer_with_retry_queue(
     lease_id: str = '',
     transfer_mode: str = '',
     share_channel_id: str = '',
+    rapid_sign_job_ids: List[str] = None,
 ) -> Dict[str, Any]:
     payload = {
         'source_kind': _normalize_source_kind(source_kind),
@@ -773,6 +782,7 @@ def _client_report_transfer_with_retry_queue(
         'lease_id': str(lease_id or '').strip(),
         'transfer_mode': str(transfer_mode or '').strip(),
         'share_channel_id': str(share_channel_id or '').strip(),
+        'rapid_sign_job_ids': [str(x or '').strip() for x in (rapid_sign_job_ids or []) if str(x or '').strip()],
     }
     try:
         return _client_report_transfer(
@@ -786,6 +796,7 @@ def _client_report_transfer_with_retry_queue(
             lease_id=payload['lease_id'],
             transfer_mode=payload['transfer_mode'],
             share_channel_id=payload['share_channel_id'],
+            rapid_sign_job_ids=payload['rapid_sign_job_ids'],
         ) or {}
     except Exception as e:
         report_error = str(e)
@@ -847,6 +858,7 @@ def _drain_pending_transfer_reports(client: SharedCenterClient = None, *, limit:
                         lease_id=payload.get('lease_id') or '',
                         transfer_mode=payload.get('transfer_mode') or '',
                         share_channel_id=payload.get('share_channel_id') or '',
+                        rapid_sign_job_ids=payload.get('rapid_sign_job_ids') or [],
                     )
                     sent += 1
                 except Exception as e:
@@ -1089,6 +1101,8 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
         }
 
     signed_meta = dict(rapid_meta or {})
+    file_info['_rapid_sign_job_id'] = job_id
+    signed_meta['_rapid_sign_job_id'] = job_id
     signed_meta['sign_key'] = sign_req.get('sign_key')
     signed_meta['sign_val'] = sign_val
     sign_backend = str(sign_req.get('backend') or '').strip().lower()
@@ -1112,7 +1126,16 @@ def _retry_rapid_with_center_sign(*, client: SharedCenterClient, p115, file_info
         f"  ➜ [负载均衡签名] 带中心 sign_val 重试完成：ok={ok}, "
         f"source={source_kind}:{source_id}, sha1={sha1[:12]}..."
     )
-    return {'ok': ok, 'response': signed_resp, 'sign_job': wait_resp, 'sha1': sha1, 'file_name': file_name, 'target_cid': target_cid}
+    return {
+        'ok': ok,
+        'response': signed_resp,
+        'sign_job': wait_resp,
+        'rapid_sign_job_id': job_id,
+        '_rapid_sign_job_id': job_id,
+        'sha1': sha1,
+        'file_name': file_name,
+        'target_cid': target_cid,
+    }
 
 
 def _remember_rapid_preid_hint(
@@ -4364,6 +4387,15 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
         try:
             result = rapid_save_file(f, target_cid=target_cid)
             if result.get('ok'):
+                job_id = str(
+                    result.get('_rapid_sign_job_id')
+                    or result.get('rapid_sign_job_id')
+                    or ((result.get('sign_job') or {}).get('job_id') if isinstance(result.get('sign_job'), dict) else '')
+                    or (((result.get('sign_job') or {}).get('job') or {}).get('job_id') if isinstance(result.get('sign_job'), dict) and isinstance((result.get('sign_job') or {}).get('job'), dict) else '')
+                    or ''
+                ).strip()
+                if job_id:
+                    f['_rapid_sign_job_id'] = job_id
                 result['attempt'] = attempt
                 return {'ok': True, 'kind': file_source_kind, 'id': file_source_id, 'file': f, 'result': result}
             error = {
@@ -4515,8 +4547,11 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                 skipped_report_sources.append({'source_kind': report_kind, 'source_id': report_id, 'file': (report_file or {}).get('file_name') or (report_file or {}).get('sha1')})
                 continue
             key = (report_kind, report_id)
-            group = report_groups.setdefault(key, {'count': 0, 'file': report_file})
+            group = report_groups.setdefault(key, {'count': 0, 'file': report_file, 'rapid_sign_job_ids': []})
             group['count'] += 1
+            job_id = str(report_file.get('_rapid_sign_job_id') or '').strip()
+            if job_id and job_id not in group['rapid_sign_job_ids']:
+                group['rapid_sign_job_ids'].append(job_id)
         if not report_groups:
             logger.warning(
                 f"  ➜ [共享资源] 秒传已成功但没有可上报的中心源，热度不会增加："
@@ -4534,6 +4569,7 @@ def consume_device_event(event: Dict[str, Any], *, ack: bool = True) -> Dict[str
                 total_count=success_file_count,
                 message=f'本机秒传成功：{success_file_count} 个视频；{report_file.get("file_name") or report_file.get("sha1") or report_id}',
                 lease_id=lease_id,
+                rapid_sign_job_ids=group.get('rapid_sign_job_ids') or [],
             )
             report_results.append({'source_kind': report_kind, 'source_id': report_id, **(report_resp or {})})
             if report_resp and report_resp.get('inserted') is False:
