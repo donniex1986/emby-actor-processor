@@ -1,81 +1,97 @@
 # Docker 部署
 
-推荐使用 `docker-compose.yml` 方式部署，以下示例与仓库 README 一致，并补充关键说明。
+ETKvNext 推荐使用 Unraid Compose 或 Docker Compose。开发分支默认构建 `linux/amd64` 镜像，正式版本标签才构建多架构镜像。
 
-## 目录准备
+## Compose
 
-```bash
-mkdir -p /path/emby-toolkit
-```
-
-## 示例 Compose
+下面的环境变量直接配置在 Compose 或 Unraid 容器环境变量中，不要求额外创建 `.env` 文件：
 
 ```yaml
 services:
-  emby-toolkit:
-    image: hbq0405/emby-toolkit:latest
-    container_name: emby-toolkit
-    network_mode: bridge
-    ports:
-      - "5257:5257"  # Web 控制台
-      - "8097:8097"  # 反向代理/虚拟库端口
+  etkn:
+    image: hbq0405/etkn:latest
+    container_name: etkn
+    restart: unless-stopped
+    init: true
     volumes:
-      - /path/emby-toolkit:/config
-      - /path/media:/media
+      - ./local_data:/config
+      - /path/strm:/strm
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - APP_DATA_DIR=/config
-      - TZ=Asia/Shanghai
+      - ETKN_CONFIG_DIR=/config
       - PUID=1000
       - PGID=1000
       - UMASK=022
-      - DB_HOST=172.17.0.1
-      - DB_PORT=5433
-      - DB_USER=embytoolkit
-      - DB_PASSWORD=embytoolkit
-      - DB_NAME=embytoolkit
-      - CONTAINER_NAME=emby-toolkit
-      - DOCKER_IMAGE_NAME=hbq0405/emby-toolkit:latest
-    restart: unless-stopped
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=etkn
+      - DB_PASSWORD=etkn
+      - DB_NAME=etkn
+      - CONTAINER_NAME=etkn
+      - DOCKER_IMAGE_NAME=hbq0405/etkn:latest
+      - TZ=Asia/Shanghai
+    ports:
+      - "5257:5257"
+      - "8097:8097"
+    networks:
+      - etkn-net
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5257/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   db:
-    image: postgres:18
-    container_name: emby-toolkit-db
+    image: postgres:16-alpine
+    container_name: etkn-db
     restart: unless-stopped
-    network_mode: bridge
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
     environment:
-      - POSTGRES_USER=embytoolkit
-      - POSTGRES_PASSWORD=embytoolkit
-      - POSTGRES_DB=embytoolkit
+      - POSTGRES_USER=etkn
+      - POSTGRES_PASSWORD=etkn
+      - POSTGRES_DB=etkn
+    networks:
+      - etkn-net
     ports:
-      - "5433:5432"
+      - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U embytoolkit -d embytoolkit"]
+      test: ["CMD-SHELL", "pg_isready -U etkn -d etkn"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+networks:
+  etkn-net:
+    driver: bridge
 
 volumes:
   postgres_data:
 ```
 
-## 端口说明
+`5257` 是管理端口，`8097` 是虚拟库反代端口。`/config` 必须持久化，频道监听会话、图片仓库和运行文件都保存在这里。
+该模板仅供参考，建议数据库分开部署或借用已有的PG数据库。
 
-- `5257`：主 Web 控制台（API 与前端 UI）。
-- `8097`：反向代理端口（虚拟库/合并视图）。
-
-## 持久化目录
-
-- `/config`：配置、日志、数据库连接信息等持久化数据。
-- `/media`：媒体库目录（实时监控与增量处理）。
-
-## 启动
+## 启动与检查
 
 ```bash
-docker-compose up -d
+docker compose up -d
+docker compose ps
+docker compose logs -f etkn
 ```
+
+浏览器访问 `http://服务器IP:5257`。健康检查接口为 `/api/health`，应返回 `{"status":"ok"}`。
+
+## 升级
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+升级前不需要删除 `/config`。数据库迁移会在容器启动时自动执行，只创建或升级结构，不会读取旧版数据库。

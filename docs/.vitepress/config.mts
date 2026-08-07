@@ -1,8 +1,8 @@
 import { defineConfig } from 'vitepress'
 
 export default defineConfig({
-  title: 'Emby Toolkit Wiki',
-  description: 'Emby Toolkit 项目文档',
+  title: 'ETKvNext Wiki',
+  description: 'ETKvNext 用户文档',
   base: '/emby-toolkit/',
   ignoreDeadLinks: true,
 
@@ -14,7 +14,7 @@ export default defineConfig({
   ],
 
   themeConfig: {
-    siteTitle: 'Emby Toolkit Wiki',
+    siteTitle: 'ETKvNext Wiki',
 
     nav: [
       { text: '首页', link: '/zh/' },
@@ -53,11 +53,11 @@ export default defineConfig({
             { text: '洗版功能', link: '/zh/guide/washing' },
             { text: '任务与调度', link: '/zh/guide/scheduler' },
             { text: '实时监控', link: '/zh/guide/monitor' },
-            { text: 'Webhook 接入', link: '/zh/guide/webhook' },
+      { text: 'Emby 与事件', link: '/zh/guide/webhook' },
             { text: '智能追剧', link: '/zh/guide/watchlist' },
-            { text: '订阅助手增强版', link: '/zh/guide/subscribe-assistant' },
+            { text: '订阅中心', link: '/zh/guide/subscribe-assistant' },
             { text: '演员订阅', link: '/zh/guide/actor-subscriptions' },
-            { text: '自建合集', link: '/zh/guide/custom-collections' },
+            { text: '虚拟库', link: '/zh/guide/custom-collections' },
             { text: '封面生成', link: '/zh/guide/cover-generator' },
             { text: '外部服务集成', link: '/zh/guide/integrations' },
             { text: '用户与权限', link: '/zh/guide/user-management' },
@@ -74,7 +74,7 @@ export default defineConfig({
     },
 
     footer: {
-      message: 'Emby Toolkit - Emby 增强管理工具',
+      message: 'ETKvNext - Emby 媒体库增强平台',
       copyright: 'Copyright © 2026-present Emby Toolkit'
     },
 

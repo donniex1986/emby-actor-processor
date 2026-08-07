@@ -1,168 +1,35 @@
 # 配置项总览
 
-配置由 `config.ini` 与数据库 `app_settings` 共同组成：
+新版配置按模块独立保存，不再要求用户保存一张包含所有功能的巨型通用配置。未授权的服务自然视为未启用，不需要额外的模块总开关。
 
-- 启动所需的基础配置写入 `config.ini`。
-- 动态配置写入数据库 `app_settings`（Web UI 保存）。
+## 基础设置
 
-配置文件路径：
+- 时区、语言、日志和任务并发。
+- 明暗模式、卡片大小、透明度、背景图和模糊度。
+- ETKN 自身地址自动发现或手动覆盖。
 
-- Docker：`/config/config.ini`（由 `APP_DATA_DIR` 指定）
-- 本地开发：`<项目>/local_data/config.ini`
+## 服务授权
 
-## 数据库
+- **Emby**：管理员登录授权、插件安装/更新、媒体库和虚拟库反代地址。
+- **115**：OpenAPI 登录授权、Cookie 扫码、双接口切换、分类、目录、重命名、洗版、映射、词表和请求间隔。
+- **TMDb**：API Key、语言和元数据偏好。
+- **网络代理**：TMDb、GitHub、Telegram、影巢等外部请求统一使用。
 
-| Key | 说明 |
-| --- | --- |
-| `db_host` | PostgreSQL 主机 |
-| `db_port` | 端口 |
-| `db_user` | 用户名 |
-| `db_password` | 密码 |
-| `db_name` | 数据库名 |
+## 核心处理
 
+- 115 待整理目录和媒体库根目录。
+- 分类筛选、命名模板和实时预览。
+- 媒体信息格式化、默认音轨/字幕、字幕下载和截图补图。
+- 洗版覆盖模式、版本槽位、优先级和分类绑定。
 
-## Emby
+## 资源中心
 
-| Key | 说明 |
-| --- | --- |
-| `emby_server_url` | Emby 服务器地址 |
-| `emby_public_url` | Emby 公网地址 |
-| `emby_api_key` | 管理员服务 Token（内部兼容键，不在设置页手工填写） |
-| `emby_user_id` | 服务授权对应的管理员用户 ID（自动获取） |
-| `emby_auth_mode` | 服务授权模式，当前固定为 `user_token` |
-| `emby_api_timeout` | API 超时（秒） |
-| `libraries_to_process` | 处理的媒体库列表 |
+共享池、影巢、频道监听、MoviePilot 分开配置。频道监听的 Telethon 会话保存在 `/config/telegram/channel_listener.session`，不随容器重启丢失。
 
-首次配置和重新授权使用 Emby 管理员账号换取服务 Token。ETK 不保存管理员用户名和密码；未完成服务授权时，管理后台会强制显示授权窗口，一键部署也会拒绝执行。
+## 订阅中心
 
-## ReverseProxy
+智能追剧、合集补齐、榜单补齐和演员订阅统一在订阅中心配置和管理。追剧列表按季展示“追剧、暂停、待定”，完结列表按剧聚合。
 
-| Key | 说明 |
-| --- | --- |
-| `proxy_enabled` | 是否启用反向代理 |
-| `proxy_port` | 反向代理端口 |
-| `proxy_allow_transcoding` | 是否允许 Emby 转码；转码时不走 302，播放并发控制、小号播放、复制播放和虚拟播放均失效 |
-| `proxy_merge_native_libraries` | 是否合并原生库 |
-| `proxy_native_view_selection` | 原生库筛选 |
-| `proxy_native_view_order` | 原生库排列顺序 |
-| `proxy_show_missing_placeholders` | 缺失项目占位 |
+## AI 与 TG
 
-## TMDb / GitHub
-
-| Key | 说明 |
-| --- | --- |
-| `tmdb_api_key` | TMDb API Key |
-| `tmdb_api_base_url` | TMDb API 基地址 |
-| `tmdb_include_adult` | 包含成人内容 |
-| `tmdb_image_language_preference` | 图片语言偏好 |
-| `github_token` | GitHub Token（用于版本检查） |
-
-## DoubanAPI
-
-| Key | 说明 |
-| --- | --- |
-| `api_douban_default_cooldown_seconds` | 冷却时间 |
-| `douban_cookie` | 豆瓣 Cookie |
-| `douban_enable_online_api` | 是否启用在线 API |
-
-## MoviePilot
-
-| Key | 说明 |
-| --- | --- |
-| `moviepilot_url` | 服务地址 |
-| `moviepilot_username` | 用户名 |
-| `moviepilot_password` | 密码 |
-| `resubscribe_daily_cap` | 每日订阅上限 |
-| `resubscribe_delay_seconds` | 订阅请求间隔 |
-
-## Monitor
-
-| Key | 说明 |
-| --- | --- |
-| `monitor_enabled` | 启用实时监控 |
-| `monitor_paths` | 监控目录列表 |
-| `monitor_extensions` | 扩展名列表 |
-| `monitor_exclude_dirs` | 排除路径 |
-
-## General
-
-| Key | 说明 |
-| --- | --- |
-| `delay_between_items_sec` | 处理间隔 |
-| `max_actors_to_process` | 单项目演员上限 |
-| `remove_actors_without_avatars` | 移除无头像演员 |
-
-## Network
-
-| Key | 说明 |
-| --- | --- |
-| `network_proxy_enabled` | 是否启用网络代理 |
-| `network_http_proxy_url` | HTTP 代理地址 |
-| `user_agent` | 请求 UA |
-| `accept_language` | Accept-Language |
-
-## AITranslation
-
-| Key | 说明 |
-| --- | --- |
-| `ai_translate_actor_role` | 启用 AI 翻译 |
-| `ai_provider` | 提供商 |
-| `ai_api_key` | API Key |
-| `ai_model_name` | 模型名称 |
-| `ai_base_url` | API 基地址 |
-| `ai_translation_mode` | 翻译模式 |
-
-## Scheduler
-
-| Key | 说明 |
-| --- | --- |
-| `task_chain_enabled` | 高频任务链开关 |
-| `task_chain_cron` | 高频 Cron |
-| `task_chain_sequence` | 高频任务序列 |
-| `task_chain_max_runtime_minutes` | 高频最大运行时间 |
-| `task_chain_low_freq_enabled` | 低频任务链开关 |
-| `task_chain_low_freq_cron` | 低频 Cron |
-| `task_chain_low_freq_sequence` | 低频任务序列 |
-| `task_chain_low_freq_max_runtime_minutes` | 低频最大运行时间 |
-
-## Actor
-
-| Key | 说明 |
-| --- | --- |
-| `actor_role_add_prefix` | 角色名前缀 |
-| `actor_main_role_only` | 仅处理主要角色 |
-
-## Logging
-
-| Key | 说明 |
-| --- | --- |
-| `log_rotation_size_mb` | 单文件大小阈值 |
-| `log_rotation_backup_count` | 备份数 |
-
-## Telegram
-
-| Key | 说明 |
-| --- | --- |
-| `telegram_bot_token` | Bot Token |
-| `telegram_channel_id` | 频道/群组 ID |
-
-## 115 网盘
-
-| Key | 说明 |
-| --- | --- |
-| `p115_save_path_cid` | 待整理目录 CID |
-| `p115_save_path_name` | 待整理目录名称 |
-| `p115_unrecognized_cid` | 未识别目录 CID |
-| `p115_unrecognized_name` | 未识别目录名称 |
-| `p115_media_root_cid` | 媒体库根目录 CID |
-| `p115_media_root_name` | 媒体库根目录名称 |
-| `p115_request_interval` | API 请求间隔（秒） |
-| `p115_max_workers` | 最大并发线程数 |
-| `p115_extensions` | 允许的文件扩展名列表 |
-| `p115_download_subs` | 下载字幕文件 |
-| `p115_local_cleanup` | 启用本地清理 |
-| `local_strm_root` | 本地 STRM 根目录 |
-| `etk_server_url` | ETK 服务器地址（STRM 直链用） |
-| `p115_enable_sync_delete` | 联动删除网盘文件 |
-
-> **提示**：更多 115 网盘功能使用说明，请参阅 [115 网盘集成](/zh/guide/p115) 详细文档。
+AI 配置包含翻译和任务中心“智能排查”开关。TG 配置包含 Bot Token、接收目标、通知类型和消息模板；Token 不会回显在页面。

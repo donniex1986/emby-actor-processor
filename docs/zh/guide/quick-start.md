@@ -1,29 +1,23 @@
 # 快速开始
 
-本节面向第一次使用者，目标是尽快跑起来并完成基础配置。
+## 准备
 
-## 先决条件
+- Docker / Docker Compose 或 Unraid Compose。
+- PostgreSQL 数据库，已创建 `etkn` 数据库和可写用户。
+- Emby 管理员账号。
+- TMDb API Key。
+- 持久化目录，例如 `/mnt/user/appdata/etkn`。
 
-- Docker 与 Docker Compose（推荐）
-- 可访问的 Emby 服务器
-- TMDb API Key
+## 启动
 
-## 最快路径
+使用 [Docker 部署](/zh/guide/docker) 中的 Compose，映射 `5257:5257` 和 `8097:8097`，并持久化 `/config`。启动后打开 `http://服务器IP:5257`。
 
-1. 使用 Docker Compose 启动服务。
-2. 访问 `http://<服务器IP>:5257` 打开管理界面。
-3. 填写 Emby、TMDb、MoviePilot（如需要）等配置并保存。
-4. 安装 ETK MediaInfo Bridge 插件，Emby 事件会由插件自动上报，无需配置 Emby Webhook。
-5. 配置 115 网盘登录，用于整理、STRM、播放直链和共享资源。
-6. 按需启用任务链、实时监控、反向代理等功能。
-7. 如果要使用公共资源互助，继续阅读 [共享资源中心](/zh/guide/shared-resource)。
+## 首次操作
 
-如果你需要完整的部署说明，请阅读 [Docker 部署](/zh/guide/docker)。
+1. 使用 Emby 管理员登录。
+2. 完成 Emby、115、TMDb 和网络代理授权。
+3. 在 Emby 页面确认媒体库和媒体库根目录。
+4. 在 115 页面选择待整理目录、分类和重命名规则。
+5. 放入一部测试电影，去任务中心确认“整理 -> 刮削 -> 入库 -> Emby 校验”完整结束。
 
-## 推荐的新手顺序
-
-1. 先让 Web 控制台能打开。
-2. 填好 Emby 和 TMDb。
-3. 确认 115 登录正常。
-4. 先跑一次基础任务，确认媒体能入库。
-5. 再开启共享资源、求共享、自动秒传等高级功能。
+不要让旧版 ETK 和 ETKvNext 同时处理同一个待整理目录。

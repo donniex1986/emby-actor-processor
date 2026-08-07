@@ -1,38 +1,15 @@
-# Webhook 接入
+# Emby 与事件
 
-Webhook 用于接收 MoviePilot 事件。Emby 事件由 ETK MediaInfo Bridge 插件直接上报，无需安装或配置 Emby Webhook 插件。
+Emby 媒体事件由 ETK MediaInfo Bridge 插件接管，不再使用旧版 `/webhook/emby` 作为 Emby 事件入口。
 
-## 配置地址
+## Emby 插件
 
-```
-http://ETK-IP:5257/webhook/emby
-请求内容类型：application/json
-```
+首次管理员授权时，ETKN 会通过映射的 Docker Socket 自动安装或更新插件。插件负责元数据、图片、媒体信息、中文搜索、播放事件和删除事件回传。
 
-MoviePilot Webhook 使用这个地址，ETK 根据 payload 里的 `type` 字段识别 MP 事件。该地址不再接收 Emby Webhook；Emby 中已有的 Webhook 配置可以直接删除。
+## MoviePilot
 
-## 推荐事件
+MoviePilot 仍可通过新版 `/webhook` 上报订阅和转存完成事件。MP 直出模式已经移除，资源转存完成后会进入 ETKN 的资源获取、整理和入库任务链。
 
-### Emby（桥接插件自动上报）
+## 排查事件
 
-- 播放：开始、停止
-- 用户：添加到收藏、移出收藏、标记已播放、标记未播放、用户政策已更新
-- 用户主动删除：删除前收集电影多版本、整季或整剧的完整 115 PickCode，删除成功后联动清理
-- 手动编辑：元数据保存、图片上传/删除/排序/手动远程选图
-
-### MoviePilot
-
-- MP安装webhook插件，请求方式：POST，URL：http://ETK-IP:5257/webhook/emby
-
-## 行为说明
-
-- 桥接插件不依赖 `item.add`、`library.new` Webhook；新媒体 Item ID 由插件直接取得并提交给 ETK。
-- 用户事件：实时同步用户权限、播放记录。
-- 元数据/图像更新：只处理用户手动修改；媒体库刷新、Provider 导入和 ETK 自身回填不会触发，避免刷新回旋。
-- MoviePilot 订阅事件：订阅助手实时接管新增、修改、删除、完成事件，维护下载状态和完成快照。
-- MoviePilot 下载事件：记录下载 hash、站点、集数等信息，供订阅助手下载巡检使用。
-- MoviePilot 整理完成事件：进入 ETK 入库整理、追剧刷新、共享登记等后续流程。
-
-## 速率控制
-
-元数据更新等高频事件内置去抖逻辑，可减少对 Emby 的压力。
+如果资源已转存但没有整理，先在任务中心查看资源获取任务是否生成了后续整理任务；如果 Emby 没有出现媒体，检查 Bridge 插件状态、媒体库路径映射和任务链末尾的 Emby 校验日志。

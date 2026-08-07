@@ -2,25 +2,16 @@
 
 ## TMDb
 
-- 用途：媒体元数据、演员信息、图片与评分基础信息。
-- 必填：`tmdb_api_key`。
+用于标题、简介、日期、分级、人物、图片、合集和影视探索。TMDb、GitHub、Telegram 和影巢请求可统一走网络代理。
 
-## 豆瓣
+## AI
 
-- 用途：补全角色中文名、演员信息与相关元数据。
-- 建议配置：`douban_cookie` 以提升可用性。
-
-## MoviePilot
-
-- 用途：订阅缺失季/集、统一订阅与自动补全。
-- 相关配置：`moviepilot_url`、`moviepilot_username`、`moviepilot_password`。
+用于标题、简介、分集简介、人物角色、文件名辅助识别和只读智能排查。AI 调用失败会回退原始数据，不阻断核心入库。
 
 ## Telegram
 
-- 用途：新入库/追更通知。
-- 相关配置：`telegram_bot_token`、`telegram_channel_id`。
+用于入库、更新、洗版、转存、任务失败和播放通知。Bot Token 由服务端安全保存，接收目标可以是全局 Chat ID 和管理员个人 Chat ID。
 
-## GitHub
+## MoviePilot
 
-- 用途：版本检查（提升 API 速率限制）。
-- 配置：`github_token`。
+只作为资源获取和订阅协作来源，MP 直出模式已移除。转存完成后由 ETKN 继续执行整理、刮削和入库。
