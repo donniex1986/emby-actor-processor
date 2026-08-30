@@ -11,6 +11,10 @@ services:
   etkn:
     image: hbq0405/etkn:latest
     container_name: etkn
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     init: true
     volumes:
