@@ -26,6 +26,9 @@ services:
       - ETKN_CONFIG_DIR=/config
       - PUID=1000
       - PGID=1000
+      - ETKN_ADMIN_USERNAME=admin
+      # 留空时首次启动自动生成随机密码并打印到容器日志
+      - ETKN_ADMIN_PASSWORD=
       - UMASK=022
       - DB_HOST=db
       - DB_PORT=5432
